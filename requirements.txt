@@ -1,0 +1,12 @@
+# Core data validation and schemas
+pydantic==2.13.5
+
+# LangChain framework
+langchain
+langchain-core
+
+# LangGraph for workflow and agent structure
+langgraph
+
+# Google Gemini integration for LangChain
+langchain-google-genai
