@@ -61,6 +61,16 @@ class MemoryStorage:
             memory.owner_id,
             memory.stable_key,
         )
+        
+        next_version = (
+            existing.version + 1 
+            if existing 
+            else 1
+        )
+        
+        memory = memory.model_copy(
+            update={"version": next_version}
+        )
 
         if existing and not existing.deleted:
             self.conn.execute(
@@ -77,7 +87,7 @@ class MemoryStorage:
 
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO memories (
+            INSERT INTO memories (
                 id,
                 owner_id,
                 stable_key,
