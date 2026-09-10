@@ -33,7 +33,13 @@ TEST_CASES = [
     {
         "label": "Task, needs a real tool",
         "input": "Add 'buy groceries' to my task list for tomorrow.",
-        "watch_for": "type=task, execution_mode=execute -- this one goes into the agent loop",
+        "watch_for": (
+            "type=task, execution_mode=execute. Since create_task actually "
+            "works now, this will likely resolve via the fast path (zero "
+            "extra LLM calls) rather than entering the reasoning loop -- "
+            "that's expected, not a bug. Force a real failure (e.g. break "
+            "create_task temporarily) if you want to see the loop kick in."
+        ),
     },
     {
         "label": "Should trigger a memory lookup",

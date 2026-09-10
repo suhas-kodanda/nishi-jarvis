@@ -1,15 +1,20 @@
 """
 P3 + P4 -- Agent Loop
 
-P3 owns `reason_node`      (decides the next action, or that the goal is met)
-P4 owns `act_node`         (actually executes tools, returns an observation)
+P3 owns `reason_node`      (decides the next action, via native tool calling)
+P4 owns the tool bodies    (in tools.py -- what actually happens when called)
 
 `AgentState` is the contract between you two -- as long as you both read and
 write it the same way, you can build your halves independently and wire them
 together at the end.
 
-Run standalone for a quick manual test (uses the placeholder act_node, so it
-won't actually do anything real yet -- that's expected until P4 fills it in):
+Reasoning uses real native tool calling (.bind_tools()), not a prompt
+describing tools in prose -- the model is structurally bound to the
+functions registered in tools.py's TOOLS dict, including their real
+argument names and types.
+
+Run standalone for a quick manual test (uses tools.py's real, working
+task-management tools):
     python agent_loop.py
 """
 
@@ -17,8 +22,8 @@ from typing import Literal, Optional, TypedDict
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import StructuredTool
 from langgraph.graph import END, StateGraph
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from schema import Observation
@@ -30,66 +35,60 @@ load_dotenv()  # reads .env in the current folder and sets os.environ from it
 class AgentState(TypedDict):
     goal: str                      # what we're trying to accomplish (from the router)
     next_action: Optional[dict]    # P3 writes this: {"tool": str, "input": dict}
-    observation: Optional[dict]    # P4 writes this: an Observation, as a dict
-    scratchpad: list                # running log of thought/action/observation, for the demo trace
+    scratchpad: list               # running log of action -> observation, fed back each turn
     is_done: bool                  # P3 sets this True once the goal is satisfied
     final_answer: Optional[str]    # P3 writes this when done
     attempts: int                  # safety valve against infinite loops
-
-
-class NextStep(BaseModel):
-    """What P3's reasoning step decides to do next."""
-
-    is_done: bool = Field(description="True if the goal has been fully accomplished.")
-    final_answer: Optional[str] = Field(default=None, description="Set only if is_done is True.")
-    tool: Optional[str] = Field(default=None, description="Name of the tool to call next, if not done.")
-    tool_input: Optional[dict] = Field(default=None, description="Arguments for that tool.")
-    thought: str = Field(description="One short sentence of reasoning, for the demo trace.")
 
 
 REASON_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are Nishi's task-execution reasoner. Given a goal and the results of "
-            "actions taken so far, decide the single next tool call needed, or declare "
-            "the goal done. Available tools: {tool_names}.",
+            "You are Nishi's task reasoner. Given the goal and progress so "
+            "far, briefly explain your thinking, then call the single next "
+            "tool needed. If the goal is already accomplished, respond with "
+            "the final answer directly instead of calling a tool.",
         ),
         ("human", "Goal: {goal}\n\nProgress so far:\n{scratchpad}"),
     ]
 )
 
+# Wrap tools.py's plain functions into real tool-calling schemas, purely
+# here -- tools.py itself stays free of any LangChain-specific code, so
+# P4 only ever needs to write plain, typed Python functions.
+_LC_TOOLS = [
+    StructuredTool.from_function(func=fn, name=name, description=(fn.__doc__ or "").strip())
+    for name, fn in TOOLS.items()
+]
+
 # Same reasoning as nishi_pipeline.py's _decision_llm: gemini-3.7-flash's
 # free tier is only 20 requests/day, and this shares that same quota.
 _reason_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
-reason_chain = REASON_PROMPT | _reason_llm.with_structured_output(
-    NextStep, method="json_schema"
-)
-
-# Derived from tools.py -- adding a tool there is all it takes for the
-# reasoning loop to know about it too. Nothing to keep in sync by hand.
-TOOL_NAMES = list(TOOLS.keys())
+reason_chain = REASON_PROMPT | _reason_llm.bind_tools(_LC_TOOLS)
 
 
 def reason_node(state: AgentState) -> AgentState:
-    """P3: decide what happens next, given the goal and what's happened so far."""
+    """P3: decide what happens next -- either call a tool or finish.
+
+    Native tool calling replaces the old NextStep schema entirely: the
+    model either returns tool_calls (it wants to act) or plain text
+    content (it's done, and that text IS the final answer). One less
+    thing to keep in sync -- is_done/final_answer used to be separate
+    fields to maintain by hand; now they're just what "no tool call"
+    naturally means.
+    """
     scratchpad_text = "\n".join(state["scratchpad"]) or "(nothing yet)"
-    step = reason_chain.invoke(
-        {
-            "goal": state["goal"],
-            "scratchpad": scratchpad_text,
-            "tool_names": ", ".join(TOOL_NAMES),
-        }
-    )
+    response = reason_chain.invoke({"goal": state["goal"], "scratchpad": scratchpad_text})
 
-    if step.is_done:
-        return {**state, "is_done": True, "final_answer": step.final_answer}
+    if not response.tool_calls:
+        return {**state, "is_done": True, "final_answer": response.content}
 
+    call = response.tool_calls[0]  # one action per turn, same as before
     return {
         **state,
-        "next_action": {"tool": step.tool, "input": step.tool_input},
-        "scratchpad": state["scratchpad"]
-        + [f"Thought: {step.thought} -> calling {step.tool}({step.tool_input})"],
+        "next_action": {"tool": call["name"], "input": call["args"]},
+        "scratchpad": state["scratchpad"] + [f"Called {call['name']}({call['args']})"],
         "attempts": state["attempts"] + 1,
     }
 
@@ -124,14 +123,13 @@ def execute_tool(tool: str, tool_input: dict) -> Observation:
 
 def act_node(state: AgentState) -> AgentState:
     """P3: unpack the action reason_node chose, run it via execute_tool,
-    and record the resulting Observation."""
+    and record what happened in the scratchpad."""
     action = state["next_action"]
     obs = execute_tool(action["tool"], action["input"])
+    outcome = obs.result if obs.success else f"FAILED: {obs.error}"
     return {
         **state,
-        "observation": obs.model_dump(),
-        "scratchpad": state["scratchpad"]
-        + [f"Observation: success={obs.success}, result={obs.result}, error={obs.error}"],
+        "scratchpad": state["scratchpad"] + [f"Result: {outcome}"],
     }
 
 
@@ -151,7 +149,6 @@ if __name__ == "__main__":
         {
             "goal": "Add 'buy groceries' to my task list for tomorrow",
             "next_action": None,
-            "observation": None,
             "scratchpad": [],
             "is_done": False,
             "final_answer": None,

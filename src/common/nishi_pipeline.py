@@ -10,12 +10,12 @@ If the decision needs real execution, a third+ set of calls happens inside
 the agent loop (reason_node), each cycle: reason -> act -> observe -> repeat.
 """
 
-from typing import Callable
+from typing import Callable, Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 
-from agent_loop import TOOLS, build_graph, execute_tool
+from agent_loop import build_graph, execute_tool
 from prompt_templets import DECISION_PROMPT, QUERY_PROMPT
 from schema import Decision, Query
 
@@ -40,26 +40,9 @@ _decision_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperatur
 decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(Decision, method="json_schema")
 
 
-def _describe_tools() -> str:
-    """Builds a readable tool list from tools.TOOLS + each function's own
-    docstring, so DECISION_PROMPT always reflects whatever's actually
-    registered -- no separate list to keep in sync by hand."""
-    if not TOOLS:
-        return "(no tools currently available)"
-    lines = []
-    for name, fn in TOOLS.items():
-        doc = (fn.__doc__ or "").strip().splitlines()[0] if fn.__doc__ else "no description"
-        lines.append(f"- {name}: {doc}")
-    return "\n".join(lines)
-
-
 def make_decision(query: Query, memory_context: str) -> Decision:
     return decision_chain.invoke(
-        {
-            "query": query.model_dump_json(),
-            "memory_context": memory_context,
-            "available_tools": _describe_tools(),
-        }
+        {"query": query.model_dump_json(), "memory_context": memory_context}
     )
 
 
@@ -70,30 +53,99 @@ _agent_app = build_graph()
 def handle_message(
     user_input: str,
     get_memory_context: Callable[[Query], str],
+    update_memory: Optional[Callable[[str, str, Query, Decision], None]] = None,
     verbose: bool = False,
 ) -> str:
     """
-    get_memory_context: Person 2's function. Only called when
+    get_memory_context: Person 2's read-side function. Only called when
     query.memory_required is True, so a plain "how's it going" never
     triggers a memory lookup.
+
+    update_memory: Person 1/2's write-side function, symmetric with
+    get_memory_context above. Called once, after the response is fully
+    decided, with (user_input, response, query, decision) -- whatever
+    should update L1/L2/L3 (a new goal mentioned, a preference stated,
+    an event worth logging) happens here. Optional and a no-op by
+    default, since this doesn't exist yet -- wire it in once it does.
 
     verbose: if True, prints the intermediate Query and Decision -- handy
     for testing without burning extra API calls re-deriving them separately.
     """
-    query = understand_query(user_input)
+    try:
+        query = understand_query(user_input)
+    except Exception as e:
+        if verbose:
+            print(f"  [understand_query failed: {e}]")
+        return "Sorry, I'm having trouble understanding that right now -- please try again in a moment."
+
     if verbose:
         print(
             f"  Query -> intent={query.intent}, tone={query.tone}, "
             f"memory_required={query.memory_required}"
         )
 
-    memory_context = get_memory_context(query) if query.memory_required else "none needed"
-    decision = make_decision(query, memory_context)
+    memory_context = "none needed"
+    if query.memory_required:
+        try:
+            memory_context = get_memory_context(query)
+        except Exception as e:
+            if verbose:
+                print(f"  [get_memory_context failed, continuing without it: {e}]")
+            memory_context = "unavailable right now"
+
+    try:
+        decision = make_decision(query, memory_context)
+    except Exception as e:
+        if verbose:
+            print(f"  [make_decision failed: {e}]")
+        return "Sorry, I'm having trouble deciding how to respond right now -- please try again in a moment."
+
     if verbose:
         print(
             f"  Decision -> type={decision.type}, "
             f"execution_mode={decision.execution_mode}, tool={decision.tool}"
         )
+
+    try:
+        response = _resolve_response(decision, verbose)
+    except Exception as e:
+        if verbose:
+            print(f"  [_resolve_response failed: {e}]")
+        # Deliberately NOT falling back to decision.answer here -- that's
+        # the placeholder acknowledgment, and returning it after a genuine
+        # crash would be the same "looks like success" problem as the
+        # loop-timeout case below.
+        response = "Something went wrong while I was working on that -- please try again."
+
+    if update_memory is not None:
+        try:
+            update_memory(user_input, response, query, decision)
+        except Exception as e:
+            # The response is already correct and ready -- a broken
+            # write-back shouldn't cost the user the answer they were
+            # waiting for. Surface it in verbose mode, don't raise.
+            if verbose:
+                print(f"  [update_memory failed, response still returned as normal: {e}]")
+
+    return response
+
+
+def _goal_context(decision: Decision) -> str:
+    """Formats the goal/objective/success_condition trio for the reasoning
+    loop's scratchpad, guarding against any of them being None -- Decision
+    marks all three Optional, and an unguarded f-string would otherwise
+    literally inject the word "None" into what gets fed back to the LLM."""
+    goal = decision.goal or "not specified"
+    objective = decision.objective or "not specified"
+    success = decision.success_condition or "not specified"
+    return f"Goal: {goal}. Objective: {objective}. Success looks like: {success}."
+
+
+def _resolve_response(decision: Decision, verbose: bool) -> str:
+    """Everything after Decision is made: figure out the actual response
+    text, whichever path (direct answer, fast tool call, or full loop)
+    it takes. Split out from handle_message so update_memory above has
+    exactly one place to hook in, regardless of which path ran."""
 
     # Conversation, or a task answerable without a tool: Decision already
     # has the full answer -- no further calls needed.
@@ -116,8 +168,7 @@ def handle_message(
         # Falls through to Section 7 below, seeded with what already failed
         # so reason_node doesn't just blindly repeat the same attempt.
         seed_scratchpad = [
-            f"Goal: {decision.goal}. Objective: {decision.objective}. "
-            f"Success looks like: {decision.success_condition}.",
+            _goal_context(decision),
             f"First attempt: called {decision.tool}({decision.tool_arguments}) "
             f"-> failed: {observation.error or 'unknown error'}",
         ]
@@ -125,31 +176,38 @@ def handle_message(
     else:
         # Decision didn't settle on an initial tool -- nothing to try
         # directly, so go straight to reasoning.
-        seed_scratchpad = [
-            f"Goal: {decision.goal}. Objective: {decision.objective}. "
-            f"Success looks like: {decision.success_condition}."
-        ]
+        seed_scratchpad = [_goal_context(decision)]
         initial_attempts = 0
 
     # --- Section 7: agentic execution -- only reached when the direct
     # attempt failed, or there was no initial tool to try at all. ---
     result = _agent_app.invoke(
         {
-            "goal": decision.goal,
+            "goal": decision.goal or "not specified -- infer from progress so far",
             "next_action": None,
-            "observation": None,
             "scratchpad": seed_scratchpad,
             "is_done": False,
             "final_answer": None,
             "attempts": initial_attempts,
         }
     )
-    return result["final_answer"] or decision.answer
+
+    if result["final_answer"]:
+        return result["final_answer"]
+
+    # Loop exhausted its attempts without completing -- say so honestly.
+    # Silently falling back to decision.answer here would present a real
+    # failure as if it succeeded, which is exactly what got fixed.
+    recent = "; ".join(result["scratchpad"][-3:]) or "no progress was made"
+    return f"I wasn't able to finish this after a few attempts. What I tried: {recent}"
 
 
 if __name__ == "__main__":
     def fake_memory(query: Query) -> str:
         return "User's name is not yet known. No prior goals recorded."
 
-    print(handle_message("How was your day?", fake_memory))
-    print(handle_message("Add 'buy groceries' to my task list for tomorrow", fake_memory))
+    def fake_update(user_input: str, response: str, query: Query, decision: Decision) -> None:
+        print(f"  [would update memory here: heard '{user_input}', decided type={decision.type}]")
+
+    print(handle_message("How was your day?", fake_memory, fake_update))
+    print(handle_message("Add 'buy groceries' to my task list for tomorrow", fake_memory, fake_update))
