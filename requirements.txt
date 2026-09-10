@@ -10,3 +10,6 @@ langgraph
 
 # Google Gemini integration for LangChain
 langchain-google-genai
+
+# Loads GEMINI_API_KEY from .env
+python-dotenv

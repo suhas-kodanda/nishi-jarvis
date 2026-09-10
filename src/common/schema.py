@@ -1,5 +1,8 @@
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field, model_validator
+
+
 class Query(BaseModel):
     interpreted_query: str = Field(
         description="The user's intended request."
@@ -40,6 +43,8 @@ class Query(BaseModel):
     ] = Field(
         description="The appropriate response approach."
     )
+
+
 class Decision(BaseModel):
     type: Literal["conversation", "task"] = Field(
         description="Whether the request is conversation or a task."
@@ -77,30 +82,41 @@ class Decision(BaseModel):
             "Do not include internal reasoning or execution details."
         )
     )
+
+    # FIX (see earlier discussion): the tool-field check now lives INSIDE the
+    # "conversation" branch, and the elif attaches to `type ==` again. In the
+    # original, the tool-field check was a sibling `if`, so any task with
+    # execution_mode="execute" and a real `tool` set would incorrectly raise
+    # "Conversation cannot have tool fields."
     @model_validator(mode="after")
-    def validate_decision(self): 
-         if not self.answer.strip():
-             raise ValueError("Answer must not be empty.")
-         if self.type == "conversation":
+    def validate_decision(self):
+        if not self.answer.strip():
+            raise ValueError("Answer must not be empty.")
+
+        if self.type == "conversation":
             if self.execution_mode is not None:
-                 raise ValueError(
-                "Conversation must have execution_mode=None."
-            )
-         if self.tool is not None or self.tool_arguments is not None:
-                 raise ValueError(
-                "Conversation cannot have tool fields."
-            )
-         elif self.type == "task":
-             if self.execution_mode is None:
-                 raise ValueError(
-                "Task must have an execution_mode."
-            )
-             if self.execution_mode == "direct":
-                 if self.tool is not None or self.tool_arguments is not None:
-                    raise ValueError(
-                    "Direct tasks cannot have tool fields."
+                raise ValueError(
+                    "Conversation must have execution_mode=None."
                 )
-         return self
+            if self.tool is not None or self.tool_arguments is not None:
+                raise ValueError(
+                    "Conversation cannot have tool fields."
+                )
+
+        elif self.type == "task":
+            if self.execution_mode is None:
+                raise ValueError(
+                    "Task must have an execution_mode."
+                )
+            if self.execution_mode == "direct":
+                if self.tool is not None or self.tool_arguments is not None:
+                    raise ValueError(
+                        "Direct tasks cannot have tool fields."
+                    )
+
+        return self
+
+
 class Observation(BaseModel):
     success: bool = Field(
         description="Whether the action completed successfully."
