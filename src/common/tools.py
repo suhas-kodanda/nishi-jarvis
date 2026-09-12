@@ -207,6 +207,14 @@ _TASKS: list[dict] = []
 _next_id = [1]  # boxed in a list so it's mutable from inside the functions below
 
 
+def get_current_datetime() -> str:
+    """Returns the current date and time -- Gemini can't reliably know 'now' on its own."""
+    from datetime import datetime
+
+    now = datetime.now()
+    return now.strftime("%A, %B %d, %Y, %I:%M %p")
+
+
 def create_task(title: str, due_date: Optional[str] = None) -> str:
     """Adds a task to the task list."""
     if not title:
@@ -442,6 +450,7 @@ def calculate(expression: str) -> str:
 #
 # ask_user isn't listed at all -- see the architecture note above it.
 TOOLS: dict[str, Callable[..., str]] = {
+    "get_current_datetime": get_current_datetime,
     "create_task": create_task,
     "list_tasks": list_tasks,
     "update_task": update_task,
