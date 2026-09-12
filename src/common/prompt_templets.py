@@ -15,7 +15,10 @@ DECISION_PROMPT = ChatPromptTemplate.from_messages([
         "and attempt your best guess at a tool name; the system verifies and "
         "corrects this automatically if you're wrong. Never fabricate the "
         "actual answer yourself, and never use tools for things you already "
-        "know for certain."
+        "know for certain. 'answer' must NEVER be empty, even for execute-mode "
+        "tasks -- the real result isn't known yet at this point, so give a "
+        "short honest placeholder instead (e.g. 'Checking that for you.'), "
+        "never a blank string."
     ),
     ("human", "Recent conversation:\n{recent_context}\n\nQuery:\n{query}\n\nMemory:\n{memory_context}"),
 ])
