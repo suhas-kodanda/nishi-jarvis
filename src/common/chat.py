@@ -20,6 +20,11 @@ warnings.filterwarnings(
     message="Model .* uses fixed sampling defaults.*",
     category=UserWarning,
 )
+warnings.filterwarnings(
+    "ignore",
+    message="Direct use of automatic function calling.*",
+    category=UserWarning,
+)
 
 from schema import Decision, Query
 
