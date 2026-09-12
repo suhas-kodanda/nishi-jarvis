@@ -45,13 +45,15 @@ REASON_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are Nishi's goal reasoner. Choose ONE appropriate tool "
-            "that directly advances the goal. Use the tool's description "
-            "and arguments. After each result, assess progress: continue, "
-            "adapt/replan, or finish when the goal is satisfied. Never use "
-            "unrelated tools or invent information."
+            "You are Nishi's task reasoner. Given the goal and progress so "
+            "far, briefly explain your thinking, then call the single next "
+            "tool needed. If the goal is already accomplished, respond with "
+            "the final answer directly instead of calling a tool. If "
+            "you're missing information you genuinely need to proceed and "
+            "can't infer it, respond with a short clarifying question "
+            "instead of guessing or calling a tool with made-up arguments.",
         ),
-        ("human", "Goal: {goal}\n\nProgress:\n{scratchpad}"),
+        ("human", "Goal: {goal}\n\nProgress so far:\n{scratchpad}"),
     ]
 )
 
@@ -83,7 +85,19 @@ def reason_node(state: AgentState) -> AgentState:
     response = reason_chain.invoke({"goal": state["goal"], "scratchpad": scratchpad_text})
 
     if not response.tool_calls:
-        return {**state, "is_done": True, "final_answer": response.content}
+        # response.content isn't guaranteed to be a plain string here --
+        # confirmed in practice: Gemini's tool-calling responses can
+        # return it as a list of content blocks (e.g.
+        # [{"type": "text", "text": "..."}]) instead. Fixed at the
+        # source so every caller gets a clean string, not just wherever
+        # display happens to patch it afterward.
+        content = response.content
+        if isinstance(content, list):
+            content = "".join(
+                block.get("text", "") for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+        return {**state, "is_done": True, "final_answer": content}
 
     call = response.tool_calls[0]  # one action per turn, same as before
     return {
