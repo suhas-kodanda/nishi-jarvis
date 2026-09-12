@@ -67,6 +67,7 @@ from pathlib import Path
 _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.readonly",
 ]
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # src/common/ -> src/ -> repo root
 _CREDENTIALS_PATH = _REPO_ROOT / "credentials.json"
@@ -269,14 +270,82 @@ def delete_calendar_event(event_id: str) -> str:
     raise NotImplementedError("delete_calendar_event: P4 to implement.")
 
 
+def _get_header(headers: list, name: str) -> str:
+    """Gmail returns headers as a flat list of {name, value} dicts, not a
+    dict -- this just makes lookup by name convenient."""
+    for h in headers:
+        if h["name"].lower() == name.lower():
+            return h["value"]
+    return "(unknown)"
+
+
+def _extract_email_body(payload: dict) -> str:
+    """Gmail nests the actual body inside `parts` for multipart messages
+    (most real emails: text + html versions together), or directly in
+    body.data for simple ones. Recursively finds and decodes the first
+    text/plain part, falling back to whatever's there if none is found."""
+    import base64
+
+    if payload.get("mimeType") == "text/plain" and payload.get("body", {}).get("data"):
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+
+    for part in payload.get("parts", []):
+        result = _extract_email_body(part)
+        if result:
+            return result
+
+    if payload.get("body", {}).get("data"):
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+
+    return ""
+
+
 def search_emails(query: str) -> str:
-    """Searches emails matching a sender, subject, or keyword."""
-    raise NotImplementedError("search_emails: P4 to implement.")
+    """Searches emails using Gmail search syntax (e.g. 'from:alice@example.com', 'subject:invoice', or plain keywords)."""
+    from googleapiclient.discovery import build
+
+    service = build("gmail", "v1", credentials=_get_google_credentials())
+    results = service.users().messages().list(userId="me", q=query, maxResults=5).execute()
+    messages = results.get("messages", [])
+
+    if not messages:
+        return f"No emails found matching '{query}'."
+
+    lines = []
+    for msg in messages:
+        detail = service.users().messages().get(
+            userId="me", id=msg["id"], format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
+        ).execute()
+        headers = detail.get("payload", {}).get("headers", [])
+        lines.append(
+            f"- [{msg['id']}] From: {_get_header(headers, 'From')} | "
+            f"Subject: {_get_header(headers, 'Subject')} | {_get_header(headers, 'Date')}"
+        )
+
+    return f"Found {len(messages)} email(s) matching '{query}':\n" + "\n".join(lines)
 
 
 def read_email(email_id: str) -> str:
-    """Reads the full content of a specific email."""
-    raise NotImplementedError("read_email: P4 to implement.")
+    """Reads the full content of a specific email (use the id shown by search_emails)."""
+    from googleapiclient.discovery import build
+
+    service = build("gmail", "v1", credentials=_get_google_credentials())
+    msg = service.users().messages().get(userId="me", id=email_id, format="full").execute()
+
+    headers = msg.get("payload", {}).get("headers", [])
+    body = _extract_email_body(msg.get("payload", {})).strip()
+    # Capped, not sent to the LLM unbounded -- a long email body feeding
+    # back into the reasoning loop is exactly the kind of per-call token
+    # cost that's been worth watching throughout this project.
+    if len(body) > 1500:
+        body = body[:1500] + "... [truncated]"
+
+    return (
+        f"From: {_get_header(headers, 'From')}\n"
+        f"Subject: {_get_header(headers, 'Subject')}\n"
+        f"Date: {_get_header(headers, 'Date')}\n\n{body}"
+    )
 
 
 def draft_email(to: str, subject: str, body: str) -> str:
@@ -381,6 +450,8 @@ TOOLS: dict[str, Callable[..., str]] = {
     "create_calendar_event": create_calendar_event,
     "find_calendar_events": find_calendar_events,
     "send_email": send_email,
+    "search_emails": search_emails,
+    "read_email": read_email,
     # "calculate": calculate,  -- see earlier discussion, not registered yet
     # "ask_user": ask_user,  -- see architecture note above before adding
 }
