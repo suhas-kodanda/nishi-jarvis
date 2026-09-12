@@ -46,14 +46,11 @@ _recent_turns: list[str] = []
 
 
 def main() -> None:
-    print("Nishi is ready. Type 'exit' or 'quit' to stop.")
-    print(
-        "Note: there's no conversation memory across turns yet (see the L4 "
-        "gap discussed earlier) -- each message is handled independently, "
-        "so it won't recall what you said two messages ago within this chat.\n"
-    )
+     print("\n  Nishi")
+     print("  ─────────────────────────────────")
+     print("  Your goal. Her actions.\n")
 
-    while True:
+     while True:
         try:
             user_input = input("You: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -91,7 +88,7 @@ def main() -> None:
         _recent_turns.append(f"Nishi: {response}")
         _recent_turns[:] = _recent_turns[-(MAX_RECENT_TURNS * 2):]
 
-    close_memory()
+     close_memory()
 
 
 if __name__ == "__main__":
