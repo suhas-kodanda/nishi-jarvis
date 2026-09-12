@@ -34,7 +34,7 @@ from memory_bridge import close as close_memory
 from memory_bridge import get_memory_context, update_memory
 from nishi_pipeline import handle_message
 
-VERBOSE = False  # set True only when debugging -- shows Query/Decision
+VERBOSE = True # set True only when debugging -- shows Query/Decision
                   # internals per turn. Default is clean: just the final answer.
 
 # Kept small on purpose: every line here gets sent on every single
