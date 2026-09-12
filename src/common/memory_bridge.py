@@ -4,35 +4,33 @@ update_memory hooks handle_message() already expects.
 
 Two real gotchas this handles, not just plumbing:
 
-1. IMPORT PATH: memory/, retrieval.py, and test_retrieval.py all live
-   at the repo ROOT, two levels above this file (src/common/). Running
-   a script directly from src/common/ (as everything here has been doing
-   -- `python chat.py`) only puts src/common/ on sys.path, not the repo
-   root. So `import memory` / `import retrieval` would fail with
-   ModuleNotFoundError unless the repo root gets added explicitly --
-   which is what the sys.path line below does. (An earlier version of
-   this file also added src/ to the path, back when a duplicate memory/
-   folder briefly existed there too -- removed now that there's only
-   one real copy, at the root.)
+1. IMPORT PATH: memory/ lives at the repo root; retrieval.py has moved
+   at least three times over the course of this project (repo root ->
+   src/memory/ -> src/). Rather than keep re-guessing its location every
+   time it shifts, both the repo root AND src/ go on sys.path here, so
+   this keeps working regardless of which of those two retrieval.py
+   currently sits in. If it moves again to somewhere neither of these
+   covers, this will need another update -- worth settling the folder
+   layout with the team once rather than patching this reactively again.
 
 2. DATABASE PATH: MemoryStorage defaults to the *relative* path
    "data/memory.db". A relative path resolves against whatever directory
-   you happen to run Python from -- so P1's own tests (run from wherever
-   they're run from) and this bridge (run from src/common/) could each
-   silently create their OWN separate database, despite both looking like
-   they're using "the same" default path. Anchoring it to the repo root
-   explicitly avoids that split-brain problem.
+   you happen to run Python from -- so P1's own tests and this bridge
+   could each silently create their OWN separate database despite both
+   looking like they're using "the same" default path. Anchoring it to
+   the repo root explicitly avoids that split-brain problem.
 """
 
 import sys
 from pathlib import Path
 from uuid import uuid4
 
-# --- Gotcha 1: make memory/ and retrieval.py (both at the repo root)
-# importable, regardless of what directory this actually runs from ---
-_REPO_ROOT = Path(__file__).resolve().parents[2]  # src/common/ -> src/ -> repo root
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+# --- Gotcha 1: cover both known locations for retrieval.py ---
+_SRC_DIR = Path(__file__).resolve().parents[1]    # src/common/ -> src/
+_REPO_ROOT = _SRC_DIR.parent                        # src/ -> repo root
+for _path in (_REPO_ROOT, _SRC_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from memory.models import MemoryContext, MemoryKind, MemoryLayer  # noqa: E402
 from memory.service import MemoryService  # noqa: E402
