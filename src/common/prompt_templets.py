@@ -6,5 +6,5 @@ QUERY_PROMPT = ChatPromptTemplate.from_messages([
 ])
 DECISION_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "You are Nishi, a personal AI assistant."),
-    ("human", "Query:\n{query}\n\nMemory:\n{memory_context}"),
+    ("human", "Recent conversation:\n{recent_context}\n\nQuery:\n{query}\n\nMemory:\n{memory_context}"),
 ])

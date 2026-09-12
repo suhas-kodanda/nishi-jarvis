@@ -40,9 +40,13 @@ _decision_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperatur
 decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(Decision, method="json_schema")
 
 
-def make_decision(query: Query, memory_context: str) -> Decision:
+def make_decision(query: Query, memory_context: str, recent_context: str) -> Decision:
     return decision_chain.invoke(
-        {"query": query.model_dump_json(), "memory_context": memory_context}
+        {
+            "query": query.model_dump_json(),
+            "memory_context": memory_context,
+            "recent_context": recent_context,
+        }
     )
 
 
@@ -54,6 +58,7 @@ def handle_message(
     user_input: str,
     get_memory_context: Callable[[Query], str],
     update_memory: Optional[Callable[[str, str, Query, Decision], None]] = None,
+    recent_context: str = "(start of conversation)",
     verbose: bool = False,
 ) -> str:
     """
@@ -63,10 +68,16 @@ def handle_message(
 
     update_memory: Person 1/2's write-side function, symmetric with
     get_memory_context above. Called once, after the response is fully
-    decided, with (user_input, response, query, decision) -- whatever
-    should update L1/L2/L3 (a new goal mentioned, a preference stated,
-    an event worth logging) happens here. Optional and a no-op by
-    default, since this doesn't exist yet -- wire it in once it does.
+    decided, with (user_input, response, query, decision).
+
+    recent_context: the last couple of raw exchanges from THIS chat
+    session, supplied by the caller (chat.py keeps this, not stored in
+    the database). Deliberately separate from get_memory_context/L1-L3 --
+    this is for "what did I just say" (needs the literal recent text,
+    not a lexical search that misses pronouns), not long-term recall.
+    Zero extra API calls: just more text in the existing make_decision
+    call, not a new request. Keep the caller's buffer small (a handful
+    of turns) -- every character here is paid for on every single call.
 
     verbose: if True, prints the intermediate Query and Decision -- handy
     for testing without burning extra API calls re-deriving them separately.
@@ -94,7 +105,7 @@ def handle_message(
             memory_context = "unavailable right now"
 
     try:
-        decision = make_decision(query, memory_context)
+        decision = make_decision(query, memory_context, recent_context)
     except Exception as e:
         if verbose:
             print(f"  [make_decision failed: {e}]")

@@ -48,7 +48,10 @@ REASON_PROMPT = ChatPromptTemplate.from_messages(
             "You are Nishi's task reasoner. Given the goal and progress so "
             "far, briefly explain your thinking, then call the single next "
             "tool needed. If the goal is already accomplished, respond with "
-            "the final answer directly instead of calling a tool.",
+            "the final answer directly instead of calling a tool. If "
+            "you're missing information you genuinely need to proceed and "
+            "can't infer it, respond with a short clarifying question "
+            "instead of guessing or calling a tool with made-up arguments.",
         ),
         ("human", "Goal: {goal}\n\nProgress so far:\n{scratchpad}"),
     ]
