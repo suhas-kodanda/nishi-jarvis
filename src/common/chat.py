@@ -8,14 +8,27 @@ Run:
 Type 'exit' or 'quit' to end the session, or Ctrl+C.
 """
 
+import warnings
+
+# Harmless: gemini-3.5-flash-lite ignores the temperature parameter we set,
+# and langchain_google_genai warns about it on every single call. Doesn't
+# affect correctness -- just noise. Suppressed here, not by editing the
+# library itself, so it stays suppressed regardless of which file actually
+# triggers it (nishi_pipeline.py or agent_loop.py).
+warnings.filterwarnings(
+    "ignore",
+    message="Model .* uses fixed sampling defaults.*",
+    category=UserWarning,
+)
+
 from schema import Decision, Query
 
 from memory_bridge import close as close_memory
 from memory_bridge import get_memory_context, update_memory
 from nishi_pipeline import handle_message
 
-VERBOSE = True  # shows the intermediate Query/Decision for each turn; flip
-                 # to False for a plain back-and-forth with no internals shown
+VERBOSE = False  # set True only when debugging -- shows Query/Decision
+                  # internals per turn. Default is clean: just the final answer.
 
 # Kept small on purpose: every line here gets sent on every single
 # make_decision call for the rest of the session. More turns = better

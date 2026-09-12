@@ -5,3 +5,5 @@ data/
 .env
 .venv/
 venv/
+credentials.json
+token.json
