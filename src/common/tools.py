@@ -39,6 +39,9 @@ the function signatures and TOOLS registration don't need to change.
 
 from typing import Callable, Optional
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Google Calendar + Gmail: real OAuth + API integration ---
 # credentials.json (downloaded from Google Cloud Console) and token.json
@@ -68,6 +71,8 @@ _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/tasks",
 ]
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # src/common/ -> src/ -> repo root
 _CREDENTIALS_PATH = _REPO_ROOT / "credentials.json"
@@ -200,13 +205,6 @@ def find_calendar_events(date: str, search_term: Optional[str] = None) -> str:
         return f"No events found on {day_start.strftime('%B %d, %Y')}."
     lines = [f"- {e['summary']} at {e['start'].get('dateTime', e['start'].get('date'))}" for e in events]
     return f"Events on {day_start.strftime('%B %d, %Y')}:\n" + "\n".join(lines)
-
-# --- Task management: real logic, in-memory storage for now ---
-
-_TASKS: list[dict] = []
-_next_id = [1]  # boxed in a list so it's mutable from inside the functions below
-
-
 def get_current_datetime() -> str:
     """Returns the current date and time -- Gemini can't reliably know 'now' on its own."""
     from datetime import datetime
@@ -214,59 +212,269 @@ def get_current_datetime() -> str:
     now = datetime.now()
     return now.strftime("%A, %B %d, %Y, %I:%M %p")
 
+# ============================================================
+# GOOGLE TASKS TOOLS
+# ============================================================
 
-def create_task(title: str, due_date: Optional[str] = None) -> str:
-    """Adds a task to the task list."""
+def _get_tasks_service():
+    """Builds the Google Tasks API client from shared credentials."""
+    from googleapiclient.discovery import build
+
+    return build(
+        "tasks",
+        "v1",
+        credentials=_get_google_credentials()
+    )
+
+
+def _get_default_tasklist_id() -> str:
+    """Returns the user's default Google Tasks list ID."""
+    return "@default"
+
+
+def create_task(
+    title: str,
+    due_date: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Creates a task in the user's Google Tasks list."""
+
     if not title:
         raise ValueError("A task title is required.")
-    task_id = str(_next_id[0])
-    _next_id[0] += 1
-    due = due_date or "no due date"
-    _TASKS.append({"id": task_id, "title": title, "due_date": due, "done": False})
-    return f"Added '{title}' (id={task_id}, due: {due})."
 
+    service = _get_tasks_service()
 
-def list_tasks() -> str:
-    """Lists everything currently on the task list."""
-    if not _TASKS:
-        return "Your task list is empty."
-    lines = [
-        f"- [{t['id']}] {t['title']} (due: {t['due_date']})" + (" \u2713" if t["done"] else "")
-        for t in _TASKS
-    ]
-    return "Your tasks:\n" + "\n".join(lines)
+    body = {
+        "title": title,
+    }
 
+    if notes:
+        body["notes"] = notes
 
-def _find_task(task_id: str) -> dict:
-    for t in _TASKS:
-        if t["id"] == task_id:
-            return t
-    raise ValueError(f"No task found with id {task_id}. Use list_tasks to see valid ids.")
-
-
-def update_task(task_id: str, title: Optional[str] = None, due_date: Optional[str] = None) -> str:
-    """Updates an existing task's title or due date."""
-    task = _find_task(task_id)
-    if title:
-        task["title"] = title
     if due_date:
-        task["due_date"] = due_date
-    return f"Updated task {task_id}: '{task['title']}' (due: {task['due_date']})."
+        due_dt = _parse_datetime(due_date)
+        body["due"] = due_dt.isoformat() + "Z"
+
+    task = service.tasks().insert(
+        tasklist=_get_default_tasklist_id(),
+        body=body,
+    ).execute()
+
+    due_text = ""
+    if task.get("due"):
+        due_text = f" Due: {task['due'][:10]}."
+
+    return (
+        f"Created Google Task '{task.get('title')}'."
+        f"{due_text}"
+        f" Task ID: {task.get('id')}."
+    )
+
+
+def list_tasks(
+    show_completed: bool = False,
+) -> str:
+    """Lists tasks from the user's Google Tasks list."""
+
+    service = _get_tasks_service()
+
+    result = service.tasks().list(
+        tasklist=_get_default_tasklist_id(),
+        showCompleted=show_completed,
+        showHidden=False,
+        maxResults=100,
+    ).execute()
+
+    tasks = result.get("items", [])
+
+    if not tasks:
+        return "No Google Tasks found."
+
+    lines = []
+
+    for task in tasks:
+        status = (
+            "✓ completed"
+            if task.get("status") == "completed"
+            else "pending"
+        )
+
+        due = task.get("due")
+        due_text = f", due {due[:10]}" if due else ""
+
+        lines.append(
+            f"- [{task.get('id')}] "
+            f"{task.get('title')} "
+            f"({status}{due_text})"
+        )
+
+    return "Google Tasks:\n" + "\n".join(lines)
+
+
+def get_task(task_id: str) -> str:
+    """Gets a specific Google Task by ID."""
+
+    if not task_id:
+        raise ValueError("A task ID is required.")
+
+    service = _get_tasks_service()
+
+    task = service.tasks().get(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+    ).execute()
+
+    due = task.get("due")
+    due_text = due[:10] if due else "No due date"
+
+    return (
+        f"Task: {task.get('title')}\n"
+        f"ID: {task.get('id')}\n"
+        f"Status: {task.get('status')}\n"
+        f"Due: {due_text}\n"
+        f"Notes: {task.get('notes', 'None')}"
+    )
+
+
+def update_task(
+    task_id: str,
+    title: Optional[str] = None,
+    due_date: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Updates an existing Google Task."""
+
+    if not task_id:
+        raise ValueError("A task ID is required.")
+
+    service = _get_tasks_service()
+
+    task = service.tasks().get(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+    ).execute()
+
+    if title is not None:
+        task["title"] = title
+
+    if due_date is not None:
+        due_dt = _parse_datetime(due_date)
+        task["due"] = due_dt.isoformat() + "Z"
+
+    if notes is not None:
+        task["notes"] = notes
+
+    updated = service.tasks().update(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+        body=task,
+    ).execute()
+
+    return (
+        f"Updated Google Task '{updated.get('title')}'. "
+        f"Task ID: {updated.get('id')}."
+    )
 
 
 def complete_task(task_id: str) -> str:
-    """Marks a task as complete."""
-    task = _find_task(task_id)
-    task["done"] = True
-    return f"Marked '{task['title']}' as complete."
+    """Marks a Google Task as completed."""
+
+    if not task_id:
+        raise ValueError("A task ID is required.")
+
+    service = _get_tasks_service()
+
+    task = service.tasks().get(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+    ).execute()
+
+    task["status"] = "completed"
+
+    completed = service.tasks().update(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+        body=task,
+    ).execute()
+
+    return (
+        f"Completed Google Task '{completed.get('title')}'."
+    )
 
 
 def delete_task(task_id: str) -> str:
-    """Deletes a task from the list."""
-    task = _find_task(task_id)
-    _TASKS.remove(task)
-    return f"Deleted task '{task['title']}'."
+    """Deletes a Google Task."""
 
+    if not task_id:
+        raise ValueError("A task ID is required.")
+
+    service = _get_tasks_service()
+
+    task = service.tasks().get(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+    ).execute()
+
+    title = task.get("title", "Unknown task")
+
+    service.tasks().delete(
+        tasklist=_get_default_tasklist_id(),
+        task=task_id,
+    ).execute()
+
+    return f"Deleted Google Task '{title}'."
+
+
+def list_task_lists() -> str:
+    """Lists the user's Google Tasks lists."""
+
+    service = _get_tasks_service()
+
+    result = service.tasklists().list(
+        maxResults=100
+    ).execute()
+
+    task_lists = result.get("items", [])
+
+    if not task_lists:
+        return "No Google Task lists found."
+
+    lines = [
+        f"- [{task_list.get('id')}] {task_list.get('title')}"
+        for task_list in task_lists
+    ]
+
+    return "Google Task lists:\n" + "\n".join(lines)
+
+
+def create_task_list(title: str) -> str:
+    """Creates a new Google Tasks list."""
+
+    if not title:
+        raise ValueError("A task list title is required.")
+
+    service = _get_tasks_service()
+
+    task_list = service.tasklists().insert(
+        body={"title": title}
+    ).execute()
+
+    return (
+        f"Created Google Task list '{task_list.get('title')}'. "
+        f"List ID: {task_list.get('id')}."
+    )
+
+
+def clear_completed_tasks() -> str:
+    """Clears completed tasks from the default Google Tasks list."""
+
+    service = _get_tasks_service()
+
+    service.tasks().clear(
+        tasklist=_get_default_tasklist_id()
+    ).execute()
+
+    return "Cleared completed Google Tasks."
 
 def update_calendar_event(event_id: str, title: Optional[str] = None, start_time: Optional[str] = None) -> str:
     """Updates an existing calendar event's time or details."""
@@ -407,7 +615,903 @@ def calculate(expression: str) -> str:
     result = _safe_eval(ast.parse(expression, mode="eval").body)
     return f"{expression} = {result}"
 
+# ============================================================
+# GOOGLE DRIVE TOOLS
+# ============================================================
 
+def _get_drive_service():
+    """Returns an authenticated Google Drive API service."""
+    from googleapiclient.discovery import build
+
+    return build(
+        "drive",
+        "v3",
+        credentials=_get_google_credentials()
+    )
+
+
+def search_drive(query: str) -> str:
+    """Searches Google Drive for files by name."""
+    if not query:
+        raise ValueError("Search query cannot be empty.")
+
+    service = _get_drive_service()
+
+    safe_query = query.replace("\\", "\\\\").replace("'", "\\'")
+
+    results = service.files().list(
+        q=f"name contains '{safe_query}' and trashed = false",
+        pageSize=20,
+        orderBy="modifiedTime desc",
+        fields=(
+            "files(id,name,mimeType,size,modifiedTime,"
+            "createdTime,webViewLink)"
+        ),
+    ).execute()
+
+    files = results.get("files", [])
+
+    if not files:
+        return f"No Drive files found matching '{query}'."
+
+    output = [f"Found {len(files)} file(s):"]
+
+    for file in files:
+        output.append(
+            f"\nName: {file.get('name')}"
+            f"\nID: {file.get('id')}"
+            f"\nType: {file.get('mimeType')}"
+            f"\nModified: {file.get('modifiedTime')}"
+            f"\nLink: {file.get('webViewLink', 'N/A')}"
+        )
+
+    return "\n".join(output)
+
+
+def list_drive_files(limit: int = 20) -> str:
+    """Lists recent non-trashed files in Google Drive."""
+    service = _get_drive_service()
+
+    limit = max(1, min(int(limit), 100))
+
+    results = service.files().list(
+        q="trashed = false",
+        pageSize=limit,
+        orderBy="modifiedTime desc",
+        fields=(
+            "files(id,name,mimeType,size,modifiedTime,"
+            "createdTime,webViewLink)"
+        ),
+    ).execute()
+
+    files = results.get("files", [])
+
+    if not files:
+        return "No files found in Google Drive."
+
+    output = [f"Found {len(files)} file(s):"]
+
+    for file in files:
+        output.append(
+            f"\nName: {file.get('name')}"
+            f"\nID: {file.get('id')}"
+            f"\nType: {file.get('mimeType')}"
+            f"\nModified: {file.get('modifiedTime')}"
+            f"\nLink: {file.get('webViewLink', 'N/A')}"
+        )
+
+    return "\n".join(output)
+
+
+def get_drive_file(file_id: str) -> str:
+    """Gets metadata for a Google Drive file."""
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    file = service.files().get(
+        fileId=file_id,
+        fields=(
+            "id,name,mimeType,size,description,"
+            "createdTime,modifiedTime,webViewLink,"
+            "parents,owners"
+        ),
+    ).execute()
+
+    owners = file.get("owners", [])
+    owner_names = ", ".join(
+        owner.get("displayName", "Unknown")
+        for owner in owners
+    )
+
+    return (
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}\n"
+        f"Type: {file.get('mimeType')}\n"
+        f"Size: {file.get('size', 'N/A')}\n"
+        f"Description: {file.get('description', 'N/A')}\n"
+        f"Created: {file.get('createdTime')}\n"
+        f"Modified: {file.get('modifiedTime')}\n"
+        f"Owners: {owner_names or 'N/A'}\n"
+        f"Link: {file.get('webViewLink', 'N/A')}"
+    )
+
+
+def read_drive_file(file_id: str) -> str:
+    """
+    Reads the contents of a Google Drive file.
+
+    Supports:
+    - Google Docs
+    - Google Sheets
+    - Google Slides
+    - Plain text files
+    - Other downloadable text files
+    """
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    file = service.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType,size,webViewLink",
+    ).execute()
+
+    name = file.get("name", "Unknown")
+    mime_type = file.get("mimeType", "")
+
+    # Google Docs
+    if mime_type == "application/vnd.google-apps.document":
+        content = service.files().export(
+            fileId=file_id,
+            mimeType="text/plain",
+        ).execute()
+
+        return (
+            f"File: {name}\n"
+            f"Type: Google Doc\n\n"
+            f"{content.decode('utf-8', errors='replace')}"
+        )
+
+    # Google Sheets
+    if mime_type == "application/vnd.google-apps.spreadsheet":
+        content = service.files().export(
+            fileId=file_id,
+            mimeType="text/csv",
+        ).execute()
+
+        return (
+            f"File: {name}\n"
+            f"Type: Google Sheet\n\n"
+            f"{content.decode('utf-8', errors='replace')}"
+        )
+
+    # Google Slides
+    if mime_type == "application/vnd.google-apps.presentation":
+        content = service.files().export(
+            fileId=file_id,
+            mimeType="text/plain",
+        ).execute()
+
+        return (
+            f"File: {name}\n"
+            f"Type: Google Slides\n\n"
+            f"{content.decode('utf-8', errors='replace')}"
+        )
+
+    # Normal downloadable files
+    try:
+        from googleapiclient.http import MediaIoBaseDownload
+        import io
+
+        request = service.files().get_media(fileId=file_id)
+
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        content = buffer.getvalue()
+
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            return (
+                f"File '{name}' is not a text-readable file.\n"
+                f"Type: {mime_type}\n"
+                f"Link: {file.get('webViewLink', 'N/A')}"
+            )
+
+        return (
+            f"File: {name}\n"
+            f"Type: {mime_type}\n\n"
+            f"{text}"
+        )
+
+    except Exception as e:
+        return f"Could not read '{name}': {e}"
+
+
+def create_drive_file(
+    name: str,
+    content: str,
+    mime_type: str = "text/plain",
+) -> str:
+    """Creates a new file in Google Drive."""
+    if not name:
+        raise ValueError("File name cannot be empty.")
+
+    service = _get_drive_service()
+
+    from googleapiclient.http import MediaIoBaseUpload
+    import io
+
+    file_metadata = {
+        "name": name,
+    }
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(content.encode("utf-8")),
+        mimetype=mime_type,
+        resumable=False,
+    )
+
+    file = service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id,name,mimeType,webViewLink,createdTime",
+    ).execute()
+
+    return (
+        f"File created successfully.\n"
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}\n"
+        f"Type: {file.get('mimeType')}\n"
+        f"Link: {file.get('webViewLink', 'N/A')}"
+    )
+
+
+def update_drive_file(
+    file_id: str,
+    content: str,
+) -> str:
+    """Replaces the contents of an existing Drive file."""
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    from googleapiclient.http import MediaIoBaseUpload
+    import io
+
+    # Get existing file metadata
+    existing_file = service.files().get(
+        fileId=file_id,
+        fields="id,name,mimeType,webViewLink",
+    ).execute()
+
+    mime_type = existing_file.get("mimeType", "text/plain")
+
+    # Google Workspace files cannot be updated using normal
+    # media upload. They need the appropriate Google API.
+    if mime_type.startswith("application/vnd.google-apps."):
+        return (
+            f"'{existing_file.get('name')}' is a Google Workspace file "
+            f"({mime_type}). Direct content replacement is not supported "
+            f"by this generic update tool."
+        )
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(content.encode("utf-8")),
+        mimetype=mime_type,
+        resumable=False,
+    )
+
+    file = service.files().update(
+        fileId=file_id,
+        media_body=media,
+        fields="id,name,mimeType,modifiedTime,webViewLink",
+    ).execute()
+
+    return (
+        f"File updated successfully.\n"
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}\n"
+        f"Modified: {file.get('modifiedTime')}\n"
+        f"Link: {file.get('webViewLink', 'N/A')}"
+    )
+
+
+def delete_drive_file(file_id: str) -> str:
+    """Moves a Google Drive file to the trash."""
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    file = service.files().get(
+        fileId=file_id,
+        fields="id,name",
+    ).execute()
+
+    service.files().update(
+        fileId=file_id,
+        body={"trashed": True},
+    ).execute()
+
+    return (
+        f"File moved to trash successfully.\n"
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}"
+    )
+
+
+def restore_drive_file(file_id: str) -> str:
+    """Restores a trashed Google Drive file."""
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    file = service.files().get(
+        fileId=file_id,
+        fields="id,name,trashed",
+    ).execute()
+
+    if not file.get("trashed"):
+        return f"File '{file.get('name')}' is not in the trash."
+
+    service.files().update(
+        fileId=file_id,
+        body={"trashed": False},
+    ).execute()
+
+    return (
+        f"File restored successfully.\n"
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}"
+    )
+
+
+def create_drive_folder(name: str) -> str:
+    """Creates a new folder in Google Drive."""
+    if not name:
+        raise ValueError("Folder name cannot be empty.")
+
+    service = _get_drive_service()
+
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+
+    folder = service.files().create(
+        body=file_metadata,
+        fields="id,name,mimeType,webViewLink,createdTime",
+    ).execute()
+
+    return (
+        f"Folder created successfully.\n"
+        f"Name: {folder.get('name')}\n"
+        f"ID: {folder.get('id')}\n"
+        f"Link: {folder.get('webViewLink', 'N/A')}"
+    )
+
+
+def move_drive_file(
+    file_id: str,
+    folder_id: str,
+) -> str:
+    """Moves a Drive file into a specified folder."""
+    if not file_id:
+        raise ValueError("file_id cannot be empty.")
+
+    if not folder_id:
+        raise ValueError("folder_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    file = service.files().get(
+        fileId=file_id,
+        fields="id,name,parents",
+    ).execute()
+
+    old_parents = ",".join(file.get("parents", []))
+
+    service.files().update(
+        fileId=file_id,
+        addParents=folder_id,
+        removeParents=old_parents,
+        fields="id,name,parents",
+    ).execute()
+
+    return (
+        f"File moved successfully.\n"
+        f"Name: {file.get('name')}\n"
+        f"ID: {file.get('id')}\n"
+        f"Folder ID: {folder_id}"
+    )
+
+
+def list_drive_folder(folder_id: str, limit: int = 20) -> str:
+    """Lists files inside a specific Google Drive folder."""
+    if not folder_id:
+        raise ValueError("folder_id cannot be empty.")
+
+    service = _get_drive_service()
+
+    limit = max(1, min(int(limit), 100))
+
+    safe_folder_id = folder_id.replace("\\", "\\\\").replace("'", "\\'")
+
+    results = service.files().list(
+        q=(
+            f"'{safe_folder_id}' in parents "
+            f"and trashed = false"
+        ),
+        pageSize=limit,
+        orderBy="name",
+        fields=(
+            "files(id,name,mimeType,size,"
+            "modifiedTime,webViewLink)"
+        ),
+    ).execute()
+
+    files = results.get("files", [])
+
+    if not files:
+        return "No files found in this folder."
+
+    output = [
+        f"Found {len(files)} file(s) in folder:"
+    ]
+
+    for file in files:
+        output.append(
+            f"\nName: {file.get('name')}"
+            f"\nID: {file.get('id')}"
+            f"\nType: {file.get('mimeType')}"
+            f"\nLink: {file.get('webViewLink', 'N/A')}"
+        )
+
+    return "\n".join(output)
+
+# ============================================================
+# GITHUB TOOLS
+# ============================================================
+
+import os
+import base64
+import requests
+
+
+_GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+_GITHUB_API = "https://api.github.com"
+
+
+def _get_github_headers() -> dict:
+    """Returns authenticated GitHub API headers."""
+
+    if not _GITHUB_TOKEN:
+        raise RuntimeError(
+            "GITHUB_TOKEN is not configured."
+        )
+
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {_GITHUB_TOKEN}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _github_request(
+    method: str,
+    endpoint: str,
+    **kwargs,
+):
+    """Makes an authenticated GitHub API request."""
+
+    response = requests.request(
+        method,
+        f"{_GITHUB_API}{endpoint}",
+        headers=_get_github_headers(),
+        timeout=20,
+        **kwargs,
+    )
+
+    if not response.ok:
+        raise RuntimeError(
+            f"GitHub API error {response.status_code}: "
+            f"{response.text[:500]}"
+        )
+
+    if response.status_code == 204:
+        return None
+
+    return response.json()
+
+
+def github_list_repositories() -> str:
+    """Lists repositories accessible to the user."""
+
+    repos = _github_request(
+        "GET",
+        "/user/repos",
+        params={
+            "per_page": 100,
+            "sort": "updated",
+        },
+    )
+
+    if not repos:
+        return "No GitHub repositories found."
+
+    lines = []
+
+    for repo in repos:
+        visibility = (
+            "private"
+            if repo.get("private")
+            else "public"
+        )
+
+        lines.append(
+            f"- {repo.get('full_name')} "
+            f"({visibility})"
+        )
+
+    return "GitHub repositories:\n" + "\n".join(lines)
+
+
+def github_get_repository(
+    owner: str,
+    repo: str,
+) -> str:
+    """Gets information about a GitHub repository."""
+
+    if not owner:
+        raise ValueError("Repository owner is required.")
+
+    if not repo:
+        raise ValueError("Repository name is required.")
+
+    data = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}",
+    )
+
+    return (
+        f"Repository: {data.get('full_name')}\n"
+        f"Description: "
+        f"{data.get('description') or 'None'}\n"
+        f"Default branch: "
+        f"{data.get('default_branch')}\n"
+        f"Language: "
+        f"{data.get('language') or 'Unknown'}\n"
+        f"Stars: {data.get('stargazers_count')}\n"
+        f"Open issues: "
+        f"{data.get('open_issues_count')}\n"
+        f"URL: {data.get('html_url')}"
+    )
+
+
+def github_list_issues(
+    owner: str,
+    repo: str,
+    state: str = "open",
+) -> str:
+    """Lists issues in a GitHub repository."""
+
+    if state not in {"open", "closed", "all"}:
+        raise ValueError(
+            "State must be open, closed, or all."
+        )
+
+    issues = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/issues",
+        params={
+            "state": state,
+            "per_page": 50,
+        },
+    )
+
+    # GitHub's issues endpoint can also return pull requests.
+    issues = [
+        issue
+        for issue in issues
+        if "pull_request" not in issue
+    ]
+
+    if not issues:
+        return "No GitHub issues found."
+
+    lines = []
+
+    for issue in issues:
+        labels = ", ".join(
+            label.get("name", "")
+            for label in issue.get("labels", [])
+        )
+
+        label_text = (
+            f" | labels: {labels}"
+            if labels
+            else ""
+        )
+
+        lines.append(
+            f"- #{issue.get('number')} "
+            f"{issue.get('title')} "
+            f"[{issue.get('state')}]"
+            f"{label_text}"
+        )
+
+    return (
+        f"GitHub issues for {owner}/{repo}:\n"
+        + "\n".join(lines)
+    )
+
+
+def github_get_issue(
+    owner: str,
+    repo: str,
+    issue_number: int,
+) -> str:
+    """Gets detailed information about a GitHub issue."""
+
+    if issue_number <= 0:
+        raise ValueError(
+            "Issue number must be positive."
+        )
+
+    issue = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/issues/{issue_number}",
+    )
+
+    labels = ", ".join(
+        label.get("name", "")
+        for label in issue.get("labels", [])
+    )
+
+    return (
+        f"Issue #{issue.get('number')}: "
+        f"{issue.get('title')}\n"
+        f"State: {issue.get('state')}\n"
+        f"Author: "
+        f"{issue.get('user', {}).get('login')}\n"
+        f"Labels: {labels or 'None'}\n"
+        f"Description:\n"
+        f"{issue.get('body') or 'No description'}\n"
+        f"URL: {issue.get('html_url')}"
+    )
+
+
+def github_create_issue(
+    owner: str,
+    repo: str,
+    title: str,
+    body: str = "",
+) -> str:
+    """Creates a new GitHub issue."""
+
+    if not title:
+        raise ValueError(
+            "Issue title is required."
+        )
+
+    issue = _github_request(
+        "POST",
+        f"/repos/{owner}/{repo}/issues",
+        json={
+            "title": title,
+            "body": body,
+        },
+    )
+
+    return (
+        f"Created GitHub issue "
+        f"#{issue.get('number')}: "
+        f"{issue.get('title')}. "
+        f"URL: {issue.get('html_url')}"
+    )
+
+
+def github_list_pull_requests(
+    owner: str,
+    repo: str,
+    state: str = "open",
+) -> str:
+    """Lists pull requests in a GitHub repository."""
+
+    if state not in {"open", "closed", "all"}:
+        raise ValueError(
+            "State must be open, closed, or all."
+        )
+
+    pulls = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/pulls",
+        params={
+            "state": state,
+            "per_page": 50,
+        },
+    )
+
+    if not pulls:
+        return "No GitHub pull requests found."
+
+    lines = []
+
+    for pull in pulls:
+        lines.append(
+            f"- #{pull.get('number')} "
+            f"{pull.get('title')} "
+            f"[{pull.get('state')}] "
+            f"{pull.get('user', {}).get('login')}"
+        )
+
+    return (
+        f"Pull requests for {owner}/{repo}:\n"
+        + "\n".join(lines)
+    )
+
+
+def github_get_file(
+    owner: str,
+    repo: str,
+    path: str,
+    branch: Optional[str] = None,
+) -> str:
+    """Reads a file from a GitHub repository."""
+
+    if not path:
+        raise ValueError("File path is required.")
+
+    params = {}
+
+    if branch:
+        params["ref"] = branch
+
+    data = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/contents/{path}",
+        params=params,
+    )
+
+    if isinstance(data, list):
+        return (
+            "The requested path is a directory, "
+            "not a file."
+        )
+
+    if data.get("type") != "file":
+        return (
+            f"GitHub returned a non-file resource "
+            f"of type '{data.get('type')}'."
+        )
+
+    encoded = data.get("content", "")
+
+    try:
+        content = base64.b64decode(
+            encoded
+        ).decode("utf-8")
+    except Exception:
+        content = "[Unable to decode file as UTF-8]"
+
+    return (
+        f"File: {data.get('path')}\n"
+        f"SHA: {data.get('sha')}\n"
+        f"Content:\n{content}"
+    )
+
+
+def github_list_commits(
+    owner: str,
+    repo: str,
+    branch: Optional[str] = None,
+    limit: int = 20,
+) -> str:
+    """Lists recent commits and their authors."""
+
+    if limit < 1 or limit > 100:
+        raise ValueError(
+            "Limit must be between 1 and 100."
+        )
+
+    params = {
+        "per_page": limit,
+    }
+
+    if branch:
+        params["sha"] = branch
+
+    commits = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/commits",
+        params=params,
+    )
+
+    if not commits:
+        return "No GitHub commits found."
+
+    lines = []
+
+    for commit in commits:
+        commit_data = commit.get("commit", {})
+        author = commit_data.get("author", {})
+
+        author_name = (
+            author.get("name")
+            or commit.get("author", {}).get("login")
+            or "Unknown"
+        )
+
+        date = author.get("date", "")
+
+        if date:
+            date = date.replace("T", " ")[:19]
+
+        message = (
+            commit_data.get("message", "")
+            .split("\n")[0]
+        )
+
+        lines.append(
+            f"- {commit.get('sha', '')[:7]} | "
+            f"{message} | "
+            f"by {author_name} | "
+            f"{date}"
+        )
+
+    return (
+        f"Recent commits for {owner}/{repo}:\n"
+        + "\n".join(lines)
+    )
+
+
+def github_get_commit(
+    owner: str,
+    repo: str,
+    sha: str,
+) -> str:
+    """Gets detailed information about a GitHub commit."""
+
+    if not sha:
+        raise ValueError("Commit SHA is required.")
+
+    commit = _github_request(
+        "GET",
+        f"/repos/{owner}/{repo}/commits/{sha}",
+    )
+
+    commit_data = commit.get("commit", {})
+    author = commit_data.get("author", {})
+
+    lines = [
+        f"Commit: {commit.get('sha')}",
+        f"Message: {commit_data.get('message', '')}",
+        f"Author: {author.get('name', 'Unknown')}",
+        f"Date: {author.get('date', 'Unknown')}",
+        "",
+        "Changed files:",
+    ]
+
+    for file in commit.get("files", []):
+        lines.append(
+            f"- {file.get('filename')} "
+            f"[{file.get('status')}] "
+            f"+{file.get('additions', 0)} "
+            f"-{file.get('deletions', 0)}"
+        )
+
+    return "\n".join(lines)
 # NOT registered below yet -- ask_user doesn't fit the other tools' contract
 # (return a string / raise). It needs the loop to genuinely pause for a real
 # human reply, which requires either LangGraph's interrupt()+checkpointer
@@ -451,18 +1555,45 @@ def calculate(expression: str) -> str:
 # ask_user isn't listed at all -- see the architecture note above it.
 TOOLS: dict[str, Callable[..., str]] = {
     "get_current_datetime": get_current_datetime,
+    # Tasks
     "create_task": create_task,
     "list_tasks": list_tasks,
     "update_task": update_task,
     "complete_task": complete_task,
     "delete_task": delete_task,
+    "get_task": get_task,
+    "list_task_lists": list_task_lists,
+    "create_task_list": create_task_list,
+    "clear_completed_tasks": clear_completed_tasks,
+    # Calendar
     "create_calendar_event": create_calendar_event,
     "find_calendar_events": find_calendar_events,
+    # Gmail
     "send_email": send_email,
     "search_emails": search_emails,
     "read_email": read_email,
-    # "calculate": calculate,  -- see earlier discussion, not registered yet
-    # "ask_user": ask_user,  -- see architecture note above before adding
+    # Google Drive
+    "search_drive": search_drive,
+    "list_drive_files": list_drive_files,
+    "get_drive_file": get_drive_file,
+    "read_drive_file": read_drive_file,
+    "create_drive_file": create_drive_file,
+    "update_drive_file": update_drive_file,
+    "delete_drive_file": delete_drive_file,
+    "restore_drive_file": restore_drive_file,
+    "create_drive_folder": create_drive_folder,
+    "move_drive_file": move_drive_file,
+    "list_drive_folder": list_drive_folder,
+    # github
+    "github_list_repositories": github_list_repositories,
+    "github_get_repository": github_get_repository,
+    "github_list_issues": github_list_issues,
+    "github_get_issue": github_get_issue,
+    "github_create_issue": github_create_issue,
+    "github_list_pull_requests": github_list_pull_requests,
+    "github_get_file": github_get_file,
+    "github_list_commits": github_list_commits,
+    "github_get_commit": github_get_commit,
 }
 
 

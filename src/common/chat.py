@@ -7,24 +7,26 @@ Run:
 
 Type 'exit' or 'quit' to end the session, or Ctrl+C.
 """
-
 import warnings
+import logging
 
-# Harmless: gemini-3.5-flash-lite ignores the temperature parameter we set,
-# and langchain_google_genai warns about it on every single call. Doesn't
-# affect correctness -- just noise. Suppressed here, not by editing the
-# library itself, so it stays suppressed regardless of which file actually
-# triggers it (nishi_pipeline.py or agent_loop.py).
+# Existing warning suppression
 warnings.filterwarnings(
     "ignore",
     message="Model .* uses fixed sampling defaults.*",
     category=UserWarning,
 )
+
 warnings.filterwarnings(
     "ignore",
     message="Direct use of automatic function calling.*",
     category=UserWarning,
 )
+
+from google.genai import models
+
+models.Models._logged_afc_warning = True
+models.AsyncModels._logged_afc_warning = True
 
 from schema import Decision, Query
 
@@ -75,6 +77,13 @@ def main() -> None:
             # shouldn't kill the whole session -- print it and keep going.
             print(f"[error this turn, session continues: {e}]\n")
             continue
+
+        if isinstance(response, list):
+             response = "".join(
+             item.get("text", "")
+              for item in response
+             if isinstance(item, dict) and item.get("type") == "text"
+              )
 
         print(f"Nishi: {response}\n")
 
