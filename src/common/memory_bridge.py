@@ -57,6 +57,47 @@ _memory_service = MemoryService(storage=MemoryStorage(db_path=_DB_PATH))
 # Swap this out the moment there's any real notion of "who's talking."
 OWNER_ID = "default_user"
 
+class _ExtractedFact(BaseModel):
+    contains_fact: bool
+    layer: Optional[Literal["L1", "L2"]] = None
+    fact: Optional[str] = None
+    stable_key: Optional[str] = Field(
+        default=None,
+        description=(
+            "A short stable category key for this fact, such as "
+            "'user_name', 'response_style', 'main_goal', or 'current_project'."
+        ),
+    )
+
+
+_FACT_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """Extract only stable user facts worth remembering.
+
+Use L1 for personality/preferences and L2 for ongoing goals.
+Return contains_fact=False for ordinary chat or one-time requests.
+
+When contains_fact is true, also return a stable_key. Reuse the same
+stable_key when a later fact updates the same topic.
+
+If true, return:
+- fact: a short fact
+- stable_key: a reusable category such as user_name,
+  response_style, main_goal, or current_project."""
+    ),
+    ("human", "User: {user_input}\nNishi: {response}"),
+])
+
+_fact_llm = ChatGoogleGenerativeAI(
+    model="gemini-3.5-flash-lite",
+    temperature=0,
+)
+
+_fact_chain = _FACT_PROMPT | _fact_llm.with_structured_output(
+    _ExtractedFact,
+    method="json_schema",
+)
 
 class _ExtractedFact(BaseModel):
     """Whether this turn contains something worth remembering long-term,
@@ -180,7 +221,7 @@ def update_memory(
     """
     _memory_service.save_memory(
         owner_id=OWNER_ID,
-        stable_key=f"turn_{uuid4().hex}",
+        stable_key=f"{layer.value.lower()}_{extracted.stable_key}",
         layer=MemoryLayer.L4,
         kind=MemoryKind.ACTION_EVENT,
         content=f"User said: {user_input!r} -> Nishi responded: {response!r}",
@@ -197,17 +238,53 @@ def update_memory(
     except Exception:
         extracted = None  # classification failing shouldn't affect anything else
 
-    if extracted and extracted.contains_fact and extracted.fact:
-        kind = MemoryKind.PERSONALITY if extracted.layer == "L1" else MemoryKind.GOAL
-        layer = MemoryLayer.L1 if extracted.layer == "L1" else MemoryLayer.L2
+    _memory_service.save_memory(
+        owner_id=OWNER_ID,
+        stable_key=f"{layer.value.lower()}_{extracted.stable_key}",
+        layer=MemoryLayer.L3,
+        kind=MemoryKind.HISTORY,
+        content=f"User: {user_input}\nNishi: {response}",
+        importance=0.5,
+        confidence=1.0,
+        metadata={"session_id": session_id},
+    )
+
+    try:
+        extracted = _fact_chain.invoke({
+            "user_input": user_input,
+            "response": response,
+        })
+    except Exception:
+        extracted = None
+
+    if (
+        extracted
+        and extracted.contains_fact
+        and extracted.layer in {"L1", "L2"}
+        and extracted.fact
+        and extracted.stable_key
+    ):
+        layer = (
+            MemoryLayer.L1
+            if extracted.layer == "L1"
+            else MemoryLayer.L2
+        )
+
+        kind = (
+            MemoryKind.PERSONALITY
+            if extracted.layer == "L1"
+            else MemoryKind.GOAL
+        )
+
         _memory_service.save_memory(
             owner_id=OWNER_ID,
-            stable_key=f"fact_{uuid4().hex}",
+            stable_key=f"{layer.value.lower()}_{extracted.stable_key}",
             layer=layer,
             kind=kind,
             content=extracted.fact,
             importance=0.8,
             confidence=1.0,
+            metadata={"status": "active"} if layer == MemoryLayer.L2 else {},
         )
 
 

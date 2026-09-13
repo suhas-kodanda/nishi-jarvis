@@ -12,12 +12,14 @@ from retrieval import (
 
 
 OWNER_ID = "test_user"
+SESSION_ID = "test_session"
 
 
 def create_test_memories(service):
 
     service.save_memory(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         stable_key="learning_style",
         layer=MemoryLayer.L1,
         kind=MemoryKind.PERSONALITY,
@@ -28,6 +30,7 @@ def create_test_memories(service):
 
     service.save_memory(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         stable_key="programming_goal",
         layer=MemoryLayer.L2,
         kind=MemoryKind.GOAL,
@@ -38,6 +41,7 @@ def create_test_memories(service):
 
     service.save_memory(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         stable_key="ai_project",
         layer=MemoryLayer.L2,
         kind=MemoryKind.GOAL,
@@ -48,6 +52,7 @@ def create_test_memories(service):
 
     service.save_memory(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         stable_key="c_pointers",
         layer=MemoryLayer.L3,
         kind=MemoryKind.HISTORY,
@@ -58,6 +63,7 @@ def create_test_memories(service):
 
     service.save_memory(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         stable_key="verilog",
         layer=MemoryLayer.L3,
         kind=MemoryKind.HISTORY,
@@ -74,6 +80,7 @@ def create_test_memories(service):
         content="NISHI successfully completed a verified memory retrieval action.",
         importance=0.5,
         confidence=1.0,
+        metadata={"session_id": SESSION_ID},
     )
 
 
@@ -81,6 +88,7 @@ def test_score(service):
 
     candidates = service.candidate_retrieval(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         query="programming coding",
         limit=20,
     )
@@ -100,6 +108,7 @@ def test_reranking(service):
 
     candidates = service.candidate_retrieval(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         query="programming coding",
         limit=20,
     )
@@ -115,6 +124,7 @@ def test_top_n(service):
 
     candidates = service.candidate_retrieval(
         owner_id=OWNER_ID,
+        session_id=SESSION_ID,
         query="user programming coding",
         limit=20,
     )
@@ -133,6 +143,7 @@ def test_selected_ids(service):
 
     candidates = service.candidate_retrieval(
         owner_id=OWNER_ID,
+        metadata={"session_id": SESSION_ID},
         query="programming",
         limit=20,
     )
@@ -161,8 +172,11 @@ def test_p1_p2_pipeline(service):
         top_n=5,
     )
 
-    assert len(selected_memories) <= 5
+    assert len(selected_memories) > 0
     assert len(selected_ids) == len(selected_memories)
+
+    for memory in selected_memories:
+        assert memory.layer == MemoryLayer.L3
 
     print("TEST 5 PASSED: P1 -> P2 pipeline")
 
@@ -177,10 +191,32 @@ def test_final_context(service):
     )
 
     assert context.query == "NISHI AI project"
-    assert len(context.memories) <= 5
+    assert len(context.memories) > 0
+
+    for memory in context.memories:
+        assert memory.layer == MemoryLayer.L3
 
     print("TEST 6 PASSED: P1 -> P2 -> P1 final context")
 
+def test_always_on_layers(service):
+    personality = service.get_l1_personality(
+        owner_id=OWNER_ID
+    )
+
+    goals = service.get_l2_active_goals(
+        owner_id=OWNER_ID
+    )
+
+    current_state = service.get_l4_current_state(
+        owner_id=OWNER_ID,
+        session_id=SESSION_ID,
+    )
+
+    assert len(personality) > 0
+    assert len(goals) > 0
+    assert len(current_state) > 0
+
+    print("TEST 7 PASSED: Always-on L1, L2, and L4")
 
 def display_results(service, query):
 
@@ -256,6 +292,7 @@ def main():
     test_selected_ids(service)
     test_p1_p2_pipeline(service)
     test_final_context(service)
+    test_always_on_layers(service)
 
     print("\nALL AUTOMATIC TESTS PASSED!")
 

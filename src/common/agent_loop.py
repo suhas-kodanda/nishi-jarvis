@@ -39,7 +39,7 @@ class AgentState(TypedDict):
     is_done: bool                  # P3 sets this True once the goal is satisfied
     final_answer: Optional[str]    # P3 writes this when done
     attempts: int                  # safety valve against infinite loops
-
+    memory_context: str      # P3 reads this, set by the router (P1) from memory_bridge
 
 REASON_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -51,7 +51,7 @@ REASON_PROMPT = ChatPromptTemplate.from_messages(
             "adapt/replan, or finish when the goal is satisfied. Never use "
             "unrelated tools or invent information."
         ),
-        ("human", "Goal: {goal}\n\nProgress:\n{scratchpad}"),
+        ("human","Persistent context:\n{memory_context}\n\n","Goal: {goal}\n\nProgress:\n{scratchpad}"),
     ]
 )
 
@@ -80,7 +80,7 @@ def reason_node(state: AgentState) -> AgentState:
     naturally means.
     """
     scratchpad_text = "\n".join(state["scratchpad"]) or "(nothing yet)"
-    response = reason_chain.invoke({"goal": state["goal"], "scratchpad": scratchpad_text})
+    response = reason_chain.invoke({"goal": state["goal"], "scratchpad": scratchpad_text, "memory_context": state["memory_context"]},)
 
     if not response.tool_calls:
         # response.content isn't guaranteed to be a plain string here --

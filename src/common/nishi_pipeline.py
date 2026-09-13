@@ -10,12 +10,16 @@ If the decision needs real execution, a third+ set of calls happens inside
 the agent loop (reason_node), each cycle: reason -> act -> observe -> repeat.
 """
 
+from tabnanny import verbose
 from typing import Callable, Optional
 
+from httpx2 import query
+from httpx2 import query
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 
 from agent_loop import build_graph, execute_tool
+from common.memory_bridge import get_memory_context
 from prompt_templets import DECISION_PROMPT, QUERY_PROMPT
 from schema import Decision, Query
 
@@ -124,14 +128,15 @@ def handle_message(
             f"memory_required={query.memory_required}"
         )
 
-    memory_context = "none needed"
-    if query.memory_required:
-        try:
-            memory_context = get_memory_context(query, session_id)
-        except Exception as e:
-            if verbose:
-                print(f"  [get_memory_context failed, continuing without it: {e}]")
-            memory_context = "unavailable right now"
+    try :
+        memory_context = get_memory_context(
+            query,
+            session_id,
+        )
+    except Exception as e:
+        if verbose:
+            print(f"  [get_memory_context failed: {e}]")
+        memory_context = "Persistent memory is unavailable right now."
 
     try:
         decision = make_decision(query, memory_context, recent_context)
@@ -147,7 +152,7 @@ def handle_message(
         )
 
     try:
-        response = _resolve_response(decision, verbose)
+        response = _resolve_response(decision,memory_context, verbose)
     except Exception as e:
         if verbose:
             print(f"  [_resolve_response failed: {e}]")
@@ -181,7 +186,7 @@ def _goal_context(decision: Decision) -> str:
     return f"Goal: {goal}. Objective: {objective}. Success looks like: {success}."
 
 
-def _resolve_response(decision: Decision, verbose: bool) -> str:
+def _resolve_response(decision: Decision, memory_context: str, verbose: bool) -> str:
     """Everything after Decision is made: figure out the actual response
     text, whichever path (direct answer, fast tool call, or full loop)
     it takes. Split out from handle_message so update_memory above has
@@ -229,6 +234,7 @@ def _resolve_response(decision: Decision, verbose: bool) -> str:
             "is_done": False,
             "final_answer": None,
             "attempts": initial_attempts,
+            "memory_context": memory_context,
         }
     )
 
