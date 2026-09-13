@@ -18,7 +18,14 @@ DECISION_PROMPT = ChatPromptTemplate.from_messages([
         "know for certain. 'answer' must NEVER be empty, even for execute-mode "
         "tasks -- the real result isn't known yet at this point, so give a "
         "short honest placeholder instead (e.g. 'Checking that for you.'), "
-        "never a blank string."
+        "never a blank string. IMPORTANT: 'best guess' applies ONLY to which "
+        "tool to try -- a wrong tool name is caught and corrected "
+        "automatically. It NEVER applies to argument values like email "
+        "addresses, names, or specific facts -- those have no safety net if "
+        "wrong. If a required detail (e.g. a real email address) isn't "
+        "actually present in the request, memory, or recent conversation, do "
+        "NOT invent a placeholder like 'username@gmail.com' -- set "
+        "type='conversation' and ask for the missing detail instead."
     ),
     ("human", "Recent conversation:\n{recent_context}\n\nQuery:\n{query}\n\nMemory:\n{memory_context}"),
 ])

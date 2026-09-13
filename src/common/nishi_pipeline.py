@@ -215,10 +215,10 @@ def _resolve_response(decision: Decision, verbose: bool) -> str:
 
 
 if __name__ == "__main__":
-    def fake_memory(query: Query) -> str:
+    def fake_memory(query: Query, session_id: str) -> str:
         return "User's name is not yet known. No prior goals recorded."
 
-    def fake_update(user_input: str, response: str, query: Query, decision: Decision) -> None:
+    def fake_update(user_input: str, response: str, query: Query, decision: Decision, session_id: str) -> None:
         print(f"  [would update memory here: heard '{user_input}', decided type={decision.type}]")
 
     print(handle_message("How was your day?", fake_memory, fake_update))

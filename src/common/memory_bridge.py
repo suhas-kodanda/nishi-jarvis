@@ -23,7 +23,12 @@ Two real gotchas this handles, not just plumbing:
 
 import sys
 from pathlib import Path
+from typing import Literal, Optional
 from uuid import uuid4
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from pydantic import BaseModel, Field
 
 # --- Gotcha 1: cover both known locations for retrieval.py ---
 _SRC_DIR = Path(__file__).resolve().parents[1]    # src/common/ -> src/
@@ -51,6 +56,43 @@ _memory_service = MemoryService(storage=MemoryStorage(db_path=_DB_PATH))
 # owner_id is the right simplification for a single-user hackathon demo.
 # Swap this out the moment there's any real notion of "who's talking."
 OWNER_ID = "default_user"
+
+
+class _ExtractedFact(BaseModel):
+    """Whether this turn contains something worth remembering long-term,
+    distinct from a routine task/conversation."""
+    contains_fact: bool = Field(
+        description="True only if this turn reveals a STABLE fact about "
+        "the user -- a preference, trait, or goal. False for routine "
+        "tasks, questions, or small talk with nothing worth remembering."
+    )
+    layer: Optional[Literal["L1", "L2"]] = Field(
+        default=None,
+        description="L1 for a personality trait/preference. L2 for a "
+        "goal/plan. Only set if contains_fact is True.",
+    )
+    fact: Optional[str] = Field(
+        default=None,
+        description="The fact, phrased as a short, clean third-person "
+        "statement. Only set if contains_fact is True.",
+    )
+
+
+_FACT_PROMPT = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        "Given one turn of conversation, decide if it reveals a STABLE "
+        "fact about the user worth remembering long-term -- a personal "
+        "preference, trait, or goal. NOT a one-off task request and NOT "
+        "small talk with nothing durable in it. Most turns contain "
+        "nothing worth remembering -- that's the expected, normal answer.",
+    ),
+    ("human", "User said: {user_input}\nNishi responded: {response}"),
+])
+
+# Cheap tier, same as the router -- this fires on every conversation turn.
+_fact_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
+_fact_chain = _FACT_PROMPT | _fact_llm.with_structured_output(_ExtractedFact, method="json_schema")
 
 
 def _format_memories(memories) -> str:
@@ -113,20 +155,28 @@ def update_memory(
     decision: Decision,
     session_id: str,
 ) -> None:
-    """Real implementation of the write-side hook. Logs every completed
-    turn as an L4 verified action/event -- the safe, mechanical default.
+    """Real implementation of the write-side hook.
 
-    NOT implemented here: deciding whether something from this turn is
-    ALSO worth promoting to L1 (a stable preference) or L2 (a goal).
-    That needs real judgment (an LLM call, or explicit user commands like
-    "remember that...") -- a separate, bigger feature, not something to
-    invent silently inside a write-back hook.
+    Two things happen here, not one:
 
-    stable_key is a fresh uuid per call, not a fixed string -- reusing
-    the same stable_key would make each new turn's event silently
-    overwrite the previous one (see storage.py's upsert(), which retires
-    the old record whenever the same (owner_id, stable_key) is reused).
-    L4 is meant to accumulate, not overwrite.
+    1. Every turn logs to L4 as before, tagged with session_id -- the
+       safe, mechanical default, unchanged.
+    2. A separate, cheap classification call decides if THIS turn also
+       contains something durable worth promoting to L1 (personality) or
+       L2 (goal). Skipped entirely for execute-mode tasks (scheduling,
+       sending an email) -- those are inherently unlikely to contain a
+       personal fact, and skipping saves both the API call and the worse
+       of the two ways this classifier can be wrong: a missed fact just
+       stays in L4 (low stakes, another chance if restated); a
+       wrongly-flagged fact permanently pollutes L1/L2, which now gets
+       included in every future turn unconditionally via
+       get_l1_personality/get_l2_active_goals above.
+
+    stable_key is a fresh uuid per call for both L4 and any promoted
+    fact -- reusing the same stable_key would make each new save
+    silently overwrite the previous one (see storage.py's upsert()).
+    Facts currently accumulate rather than merge/update -- a known
+    simplification, not something this pass covers.
     """
     _memory_service.save_memory(
         owner_id=OWNER_ID,
@@ -139,8 +189,28 @@ def update_memory(
         metadata={"session_id": session_id},
     )
 
+    try:
+        skip = decision.execution_mode == "execute"
+        extracted = None if skip else _fact_chain.invoke(
+            {"user_input": user_input, "response": response}
+        )
+    except Exception:
+        extracted = None  # classification failing shouldn't affect anything else
+
+    if extracted and extracted.contains_fact and extracted.fact:
+        kind = MemoryKind.PERSONALITY if extracted.layer == "L1" else MemoryKind.GOAL
+        layer = MemoryLayer.L1 if extracted.layer == "L1" else MemoryLayer.L2
+        _memory_service.save_memory(
+            owner_id=OWNER_ID,
+            stable_key=f"fact_{uuid4().hex}",
+            layer=layer,
+            kind=kind,
+            content=extracted.fact,
+            importance=0.8,
+            confidence=1.0,
+        )
+
 
 def close() -> None:
     """Call on shutdown to close the SQLite connection cleanly."""
     _memory_service.storage.close()
-

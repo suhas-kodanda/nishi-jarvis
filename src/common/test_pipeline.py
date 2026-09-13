@@ -52,7 +52,7 @@ TEST_CASES = [
 ]
 
 
-def fake_memory(query: Query) -> str:
+def fake_memory(query: Query, session_id: str) -> str:
     """Stand-in for Person 2's real retrieval logic. Swap this out once that exists."""
     return "User's name is not yet known. No prior goals recorded."
 
