@@ -11,8 +11,8 @@ Run:
 
 import time
 
-from nishi_pipeline import handle_message
-from schema import Query
+from common.nishi_pipeline import handle_message
+from common.memory_bridge import get_memory_context, update_memory
 
 TEST_CASES = [
     {
@@ -52,11 +52,6 @@ TEST_CASES = [
 ]
 
 
-def fake_memory(query: Query, session_id: str) -> str:
-    """Stand-in for Person 2's real retrieval logic. Swap this out once that exists."""
-    return "User's name is not yet known. No prior goals recorded."
-
-
 def run_case(case: dict) -> None:
     print("=" * 72)
     print(f"CASE: {case['label']}")
@@ -64,7 +59,13 @@ def run_case(case: dict) -> None:
     print(f"WATCH FOR: {case['watch_for']}")
     print("-" * 72)
     start = time.time()
-    final = handle_message(case["input"], fake_memory, verbose=True)
+    final = handle_message(
+        case["input"],
+        get_memory_context,
+        update_memory,
+        session_id="test_session",
+        verbose=True,
+    )
     elapsed = time.time() - start
     print(f"FINAL RESPONSE ({elapsed:.1f}s): {final}\n")
 

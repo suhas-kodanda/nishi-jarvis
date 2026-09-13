@@ -1,3 +1,5 @@
+import pytest
+from memory.storage import MemoryStorage
 from memory.service import MemoryService
 from memory.models import MemoryLayer, MemoryKind
 
@@ -14,6 +16,14 @@ from retrieval import (
 OWNER_ID = "test_user"
 SESSION_ID = "test_session"
 
+@pytest.fixture
+def service(tmp_path):
+    storage = MemoryStorage(
+        db_path=str(tmp_path / "test_memory.db")
+    )
+    service = MemoryService(storage=storage)
+    create_test_memories(service)
+    return service
 
 def create_test_memories(service):
 
@@ -48,6 +58,17 @@ def create_test_memories(service):
         content="User is building an Agentic AI project called NISHI.",
         importance=1.0,
         confidence=1.0,
+    )
+
+    service.save_memory(
+        owner_id=OWNER_ID,
+        session_id=SESSION_ID,
+        stable_key="nishi_history",
+        layer=MemoryLayer.L3,
+        kind=MemoryKind.HISTORY,
+        content="User previously discussed the NISHI Agentic AI project.",
+        importance=0.8,
+        confidence=0.9,
     )
 
     service.save_memory(

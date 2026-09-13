@@ -18,20 +18,39 @@ from httpx2 import query
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 
-from agent_loop import build_graph, execute_tool
+from common.agent_loop import build_graph, execute_tool
 from common.memory_bridge import get_memory_context
-from prompt_templets import DECISION_PROMPT, QUERY_PROMPT
-from schema import Decision, Query
+from common.prompt_templets import DECISION_PROMPT, QUERY_PROMPT
+from common.schema import Decision, Query
 
 load_dotenv()  # reads .env in the current folder and sets os.environ from it
 
 # --- Stage 1: understand the query ---
-_query_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
-query_chain = QUERY_PROMPT | _query_llm.with_structured_output(Query, method="json_schema")
+# _query_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
+# query_chain = QUERY_PROMPT | _query_llm.with_structured_output(Query, method="json_schema")
+_query_llm = None
+_query_chain = None
+
+
+def get_query_chain():
+    global _query_llm, _query_chain
+
+    if _query_chain is None:
+        _query_llm = ChatGoogleGenerativeAI(
+            model="gemini-3.5-flash-lite",
+            temperature=0,
+        )
+
+        _query_chain = QUERY_PROMPT | _query_llm.with_structured_output(
+            Query,
+            method="json_schema",
+        )
+
+    return _query_chain
 
 
 def understand_query(user_input: str) -> Query:
-    return query_chain.invoke({"user_input": user_input})
+    return get_query_chain().invoke({"user_input": user_input})
 
 
 # --- Stage 2: decide what to do about it (and draft the reply, if talk) ---
@@ -40,8 +59,27 @@ def understand_query(user_input: str) -> Query:
 # roughly 25x higher (~500/day) -- far more headroom for a hackathon's
 # worth of iteration. Swap back to gemini-3.7-flash once billing is linked
 # or if you want the quality upgrade specifically for the final demo.
-_decision_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
-decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(Decision, method="json_schema")
+# _decision_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
+# decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(Decision, method="json_schema")
+_decision_llm = None
+_decision_chain = None
+
+
+def get_decision_chain():
+    global _decision_llm, _decision_chain
+
+    if _decision_chain is None:
+        _decision_llm = ChatGoogleGenerativeAI(
+            model="gemini-3.5-flash-lite",
+            temperature=0,
+        )
+
+        _decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(
+            Decision,
+            method="json_schema",
+        )
+
+    return _decision_chain
 
 
 def make_decision(query: Query, memory_context: str, recent_context: str) -> Decision:
@@ -66,7 +104,7 @@ def make_decision(query: Query, memory_context: str, recent_context: str) -> Dec
         "recent_context": recent_context,
     }
     try:
-        return decision_chain.invoke(payload)
+        return get_decision_chain().invoke(payload)
     except Exception as first_error:
         retry_payload = {
             **payload,
@@ -77,7 +115,7 @@ def make_decision(query: Query, memory_context: str, recent_context: str) -> Dec
             ),
         }
         try:
-            return decision_chain.invoke(retry_payload)
+            return get_decision_chain().invoke(retry_payload)
         except Exception:
             raise first_error  # preserve the ORIGINAL error, not the retry's
 

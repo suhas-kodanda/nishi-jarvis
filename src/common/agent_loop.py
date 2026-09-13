@@ -26,8 +26,8 @@ from langchain_core.tools import StructuredTool
 from langgraph.graph import END, StateGraph
 from dotenv import load_dotenv
 
-from schema import Observation
-from tools import TOOLS
+from common.schema import Observation
+from common.tools import TOOLS
 
 load_dotenv()  # reads .env in the current folder and sets os.environ from it
 
@@ -51,7 +51,12 @@ REASON_PROMPT = ChatPromptTemplate.from_messages(
             "adapt/replan, or finish when the goal is satisfied. Never use "
             "unrelated tools or invent information."
         ),
-        ("human","Persistent context:\n{memory_context}\n\n","Goal: {goal}\n\nProgress:\n{scratchpad}"),
+        (
+            "human",
+            "Persistent context:\n{memory_context}\n\n"
+            "Goal: {goal}\n\n"
+            "Progress:\n{scratchpad}",
+        ),
     ]
 )
 
@@ -65,8 +70,23 @@ _LC_TOOLS = [
 
 # Same reasoning as nishi_pipeline.py's _decision_llm: gemini-3.7-flash's
 # free tier is only 20 requests/day, and this shares that same quota.
-_reason_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
-reason_chain = REASON_PROMPT | _reason_llm.bind_tools(_LC_TOOLS)
+# _reason_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
+# reason_chain = REASON_PROMPT | _reason_llm.bind_tools(_LC_TOOLS)
+_reason_llm = None
+reason_chain = None
+
+
+def get_reason_chain():
+    global _reason_llm, reason_chain
+
+    if reason_chain is None:
+        _reason_llm = ChatGoogleGenerativeAI(
+            model="gemini-3.5-flash-lite",
+            temperature=0,
+        )
+        reason_chain = REASON_PROMPT | _reason_llm.bind_tools(_LC_TOOLS)
+
+    return reason_chain
 
 
 def reason_node(state: AgentState) -> AgentState:
@@ -80,7 +100,7 @@ def reason_node(state: AgentState) -> AgentState:
     naturally means.
     """
     scratchpad_text = "\n".join(state["scratchpad"]) or "(nothing yet)"
-    response = reason_chain.invoke({"goal": state["goal"], "scratchpad": scratchpad_text, "memory_context": state["memory_context"]},)
+    response = get_reason_chain().invoke({"goal": state["goal"], "scratchpad": scratchpad_text, "memory_context": state["memory_context"]},)
 
     if not response.tool_calls:
         # response.content isn't guaranteed to be a plain string here --

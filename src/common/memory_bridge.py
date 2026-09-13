@@ -1,3 +1,4 @@
+import uuid
 """
 Wires the real P1/P2 memory system into the get_memory_context /
 update_memory hooks handle_message() already expects.
@@ -42,7 +43,7 @@ from memory.service import MemoryService  # noqa: E402
 from memory.storage import MemoryStorage  # noqa: E402
 from retrieval import retrieve_final_context  # noqa: E402
 
-from schema import Decision, Query  # noqa: E402
+from common.schema import Decision, Query  # noqa: E402
 
 # --- Gotcha 2: anchor the DB to the repo root, not the current working dir ---
 _DB_PATH = str(_REPO_ROOT / "data" / "memory.db")
@@ -89,52 +90,25 @@ If true, return:
     ("human", "User: {user_input}\nNishi: {response}"),
 ])
 
-_fact_llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash-lite",
-    temperature=0,
-)
-
-_fact_chain = _FACT_PROMPT | _fact_llm.with_structured_output(
-    _ExtractedFact,
-    method="json_schema",
-)
-
-class _ExtractedFact(BaseModel):
-    """Whether this turn contains something worth remembering long-term,
-    distinct from a routine task/conversation."""
-    contains_fact: bool = Field(
-        description="True only if this turn reveals a STABLE fact about "
-        "the user -- a preference, trait, or goal. False for routine "
-        "tasks, questions, or small talk with nothing worth remembering."
-    )
-    layer: Optional[Literal["L1", "L2"]] = Field(
-        default=None,
-        description="L1 for a personality trait/preference. L2 for a "
-        "goal/plan. Only set if contains_fact is True.",
-    )
-    fact: Optional[str] = Field(
-        default=None,
-        description="The fact, phrased as a short, clean third-person "
-        "statement. Only set if contains_fact is True.",
-    )
+_fact_llm = None
+_fact_chain = None
 
 
-_FACT_PROMPT = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "Given one turn of conversation, decide if it reveals a STABLE "
-        "fact about the user worth remembering long-term -- a personal "
-        "preference, trait, or goal. NOT a one-off task request and NOT "
-        "small talk with nothing durable in it. Most turns contain "
-        "nothing worth remembering -- that's the expected, normal answer.",
-    ),
-    ("human", "User said: {user_input}\nNishi responded: {response}"),
-])
+def get_fact_chain():
+    global _fact_llm, _fact_chain
 
-# Cheap tier, same as the router -- this fires on every conversation turn.
-_fact_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
-_fact_chain = _FACT_PROMPT | _fact_llm.with_structured_output(_ExtractedFact, method="json_schema")
+    if _fact_chain is None:
+        _fact_llm = ChatGoogleGenerativeAI(
+            model="gemini-3.5-flash-lite",
+            temperature=0,
+        )
 
+        _fact_chain = _FACT_PROMPT | _fact_llm.with_structured_output(
+            _ExtractedFact,
+            method="json_schema",
+        )
+
+    return _fact_chain
 
 def _format_memories(memories) -> str:
     if not memories:
@@ -221,7 +195,7 @@ def update_memory(
     """
     _memory_service.save_memory(
         owner_id=OWNER_ID,
-        stable_key=f"{layer.value.lower()}_{extracted.stable_key}",
+        stable_key=f"l4_{uuid.uuid4().hex}",
         layer=MemoryLayer.L4,
         kind=MemoryKind.ACTION_EVENT,
         content=f"User said: {user_input!r} -> Nishi responded: {response!r}",
@@ -232,7 +206,7 @@ def update_memory(
 
     try:
         skip = decision.execution_mode == "execute"
-        extracted = None if skip else _fact_chain.invoke(
+        extracted = None if skip else get_fact_chain().invoke(
             {"user_input": user_input, "response": response}
         )
     except Exception:
@@ -240,7 +214,7 @@ def update_memory(
 
     _memory_service.save_memory(
         owner_id=OWNER_ID,
-        stable_key=f"{layer.value.lower()}_{extracted.stable_key}",
+        stable_key=f"l3_{uuid.uuid4().hex}",
         layer=MemoryLayer.L3,
         kind=MemoryKind.HISTORY,
         content=f"User: {user_input}\nNishi: {response}",
@@ -250,7 +224,7 @@ def update_memory(
     )
 
     try:
-        extracted = _fact_chain.invoke({
+        extracted = get_fact_chain().invoke({
             "user_input": user_input,
             "response": response,
         })
