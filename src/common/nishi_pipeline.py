@@ -56,8 +56,9 @@ _agent_app = build_graph()
 
 def handle_message(
     user_input: str,
-    get_memory_context: Callable[[Query], str],
-    update_memory: Optional[Callable[[str, str, Query, Decision], None]] = None,
+    get_memory_context: Callable[[Query, str], str],
+    update_memory: Optional[Callable[[str, str, Query, Decision, str], None]] = None,
+    session_id: str = "default_session",
     recent_context: str = "(start of conversation)",
     verbose: bool = False,
 ) -> str:
@@ -98,7 +99,7 @@ def handle_message(
     memory_context = "none needed"
     if query.memory_required:
         try:
-            memory_context = get_memory_context(query)
+            memory_context = get_memory_context(query, session_id)
         except Exception as e:
             if verbose:
                 print(f"  [get_memory_context failed, continuing without it: {e}]")
@@ -130,7 +131,7 @@ def handle_message(
 
     if update_memory is not None:
         try:
-            update_memory(user_input, response, query, decision)
+            update_memory(user_input, response, query, decision,session_id)
         except Exception as e:
             # The response is already correct and ready -- a broken
             # write-back shouldn't cost the user the answer they were

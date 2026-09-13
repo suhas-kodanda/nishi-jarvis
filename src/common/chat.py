@@ -9,6 +9,7 @@ Type 'exit' or 'quit' to end the session, or Ctrl+C.
 """
 import warnings
 import logging
+from uuid import uuid4
 
 # Existing warning suppression
 warnings.filterwarnings(
@@ -43,6 +44,7 @@ VERBOSE = False # set True only when debugging -- shows Query/Decision
 # not an arbitrary number -- tune it if it's not enough in practice.
 MAX_RECENT_TURNS = 3
 _recent_turns: list[str] = []
+SESSION_ID = uuid4().hex
 
 
 def main() -> None:
@@ -66,7 +68,7 @@ def main() -> None:
         try:
             recent_context = "\n".join(_recent_turns) or "(start of conversation)"
             response = handle_message(
-                user_input, get_memory_context, update_memory,
+                user_input, get_memory_context, update_memory,session_id=SESSION_ID,
                 recent_context=recent_context, verbose=VERBOSE,
             )
         except Exception as e:

@@ -206,3 +206,39 @@ class MemoryService:
             and memory.expires_at
             <= datetime.now(timezone.utc)
         )
+
+    def get_l1_personality(self, *, owner_id: str):
+        return [
+            memory
+            for memory in self.storage.list_active(owner_id)
+            if memory.layer == MemoryLayer.L1
+            and not self._expired(memory)
+        ]
+
+    def get_l2_active_goals(self, *, owner_id: str):
+        return [
+            memory
+            for memory in self.storage.list_active(owner_id)
+            if memory.layer == MemoryLayer.L2
+            and memory.metadata.get("status", "active") == "active"
+            and not self._expired(memory)
+        ]
+
+    def get_l4_current_state(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+        limit: int = 4,
+    ):
+        memories = [
+            memory
+            for memory in self.storage.list_active(owner_id)
+            if memory.layer == MemoryLayer.L4
+            and memory.metadata.get("session_id") == session_id
+            and not self._expired(memory)
+        ]
+
+        return memories[:limit]
+
+    

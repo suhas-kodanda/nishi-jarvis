@@ -53,32 +53,66 @@ _memory_service = MemoryService(storage=MemoryStorage(db_path=_DB_PATH))
 OWNER_ID = "default_user"
 
 
-def _format_memory_context(context: MemoryContext) -> str:
-    """Turns P2's structured MemoryContext into the plain string
-    DECISION_PROMPT's {memory_context} placeholder expects. Deliberately
-    compact -- only layer/kind/content, not memory_id/score/metadata,
-    since this text gets sent on every call that needs it."""
-    if not context.memories:
-        return "No relevant memories found."
-    lines = [f"- ({m.layer.value}/{m.kind.value}) {m.content}" for m in context.memories]
-    return "\n".join(lines)
+def _format_memories(memories) -> str:
+    if not memories:
+        return "None."
+
+    return "\n".join(
+        f"- {memory.content}"
+        for memory in memories
+    )
 
 
-def get_memory_context(query: Query) -> str:
-    """Real implementation of the read-side hook. Runs the full P1 -> P2
-    -> P1 pipeline (candidate_retrieval -> rerank -> select ->
-    build_memory_context) using P2's own retrieve_final_context(), then
-    formats the result into a string."""
-    context = retrieve_final_context(
+def get_memory_context(
+    query: Query,
+    session_id: str,
+) -> str:
+    # Always include stable context.
+    personality = _memory_service.get_l1_personality(
+        owner_id=OWNER_ID
+    )
+
+    active_goals = _memory_service.get_l2_active_goals(
+        owner_id=OWNER_ID
+    )
+
+    current_state = _memory_service.get_l4_current_state(
+        owner_id=OWNER_ID,
+        session_id=session_id,
+    )
+
+    # Retrieve only relevant L3 history.
+    history_context = retrieve_final_context(
         provider=_memory_service,
         owner_id=OWNER_ID,
         query=query.interpreted_query,
-        top_n=5,
+        top_n=4,
     )
-    return _format_memory_context(context)
+
+    relevant_history = history_context.memories
+
+    return f"""
+[PERSISTENT PERSONALITY — L1]
+{_format_memories(personality)}
+
+[ACTIVE GOALS — L2]
+{_format_memories(active_goals)}
+
+[CURRENT SESSION STATE — L4]
+{_format_memories(current_state)}
+
+[RELEVANT HISTORY — L3]
+{_format_memories(relevant_history)}
+""".strip()
 
 
-def update_memory(user_input: str, response: str, query: Query, decision: Decision) -> None:
+def update_memory(
+    user_input: str,
+    response: str,
+    query: Query,
+    decision: Decision,
+    session_id: str,
+) -> None:
     """Real implementation of the write-side hook. Logs every completed
     turn as an L4 verified action/event -- the safe, mechanical default.
 
@@ -102,9 +136,11 @@ def update_memory(user_input: str, response: str, query: Query, decision: Decisi
         content=f"User said: {user_input!r} -> Nishi responded: {response!r}",
         importance=0.3,
         confidence=1.0,
+        metadata={"session_id": session_id},
     )
 
 
 def close() -> None:
     """Call on shutdown to close the SQLite connection cleanly."""
     _memory_service.storage.close()
+

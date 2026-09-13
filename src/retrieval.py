@@ -9,7 +9,7 @@ P2 responsibilities:
 5. Send selected IDs back to P1.
 """
 
-from memory.models import MemoryCandidate
+from memory.models import MemoryCandidate, MemoryLayer 
 
 
 def calculate_p2_score(memory: MemoryCandidate) -> float:
@@ -92,6 +92,11 @@ def retrieve_and_select(
         query=query,
         limit=20,
     )
+    candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.layer == MemoryLayer.L3
+    ]
 
     selected_memories = select_memories(
         candidates,
