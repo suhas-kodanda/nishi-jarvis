@@ -41,13 +41,41 @@ decision_chain = DECISION_PROMPT | _decision_llm.with_structured_output(Decision
 
 
 def make_decision(query: Query, memory_context: str, recent_context: str) -> Decision:
-    return decision_chain.invoke(
-        {
-            "query": query.model_dump_json(),
-            "memory_context": memory_context,
-            "recent_context": recent_context,
+    """Wraps decision_chain.invoke with ONE retry on failure.
+
+    Decision's own model_validator has rejected real output a few times
+    in practice (e.g. execution_mode='direct' with a tool set, or an
+    empty 'answer') -- each one previously needed a manual prompt fix
+    after the fact. This gives the model one chance to see its own
+    actual error and self-correct, before falling back to the existing,
+    already-tested failure path in handle_message(). Same underlying
+    principle as the reasoning loop already self-correcting an invented
+    tool name -- just applied one stage earlier, to the schema itself.
+
+    Deliberately ONE retry, not a loop -- if it fails twice, something
+    more fundamental is wrong, and handle_message()'s existing generic
+    error message is the right response, not another silent attempt.
+    """
+    payload = {
+        "query": query.model_dump_json(),
+        "memory_context": memory_context,
+        "recent_context": recent_context,
+    }
+    try:
+        return decision_chain.invoke(payload)
+    except Exception as first_error:
+        retry_payload = {
+            **payload,
+            "recent_context": (
+                f"{recent_context}\n\n[SYSTEM: your previous attempt at "
+                f"this exact decision failed schema validation -- fix it "
+                f"this time. Error: {first_error}]"
+            ),
         }
-    )
+        try:
+            return decision_chain.invoke(retry_payload)
+        except Exception:
+            raise first_error  # preserve the ORIGINAL error, not the retry's
 
 
 # --- Stage 3: orchestrate the whole turn ---

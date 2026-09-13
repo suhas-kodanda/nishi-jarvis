@@ -69,7 +69,7 @@ load_dotenv()
 # automatic refresh) on every call after, no repeated browser prompts.
 _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.compose",  # covers send + draft management (superset of gmail.send)
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/tasks",
@@ -477,13 +477,27 @@ def clear_completed_tasks() -> str:
     return "Cleared completed Google Tasks."
 
 def update_calendar_event(event_id: str, title: Optional[str] = None, start_time: Optional[str] = None) -> str:
-    """Updates an existing calendar event's time or details."""
-    raise NotImplementedError("update_calendar_event: P4 to implement.")
+    """Updates an existing calendar event's title or start time."""
+    service = _get_calendar_service()
+
+    updates = {}
+    if title is not None:
+        updates["summary"] = title
+    if start_time is not None:
+        start_dt = _parse_datetime(start_time)
+        updates["start"] = {"dateTime": start_dt.isoformat(), "timeZone": _DEFAULT_TIMEZONE}
+    if not updates:
+        return "No changes were specified -- nothing was updated."
+
+    updated = service.events().patch(calendarId="primary", eventId=event_id, body=updates).execute()
+    return f"Updated event '{updated.get('summary', event_id)}'."
 
 
 def delete_calendar_event(event_id: str) -> str:
     """Deletes a calendar event."""
-    raise NotImplementedError("delete_calendar_event: P4 to implement.")
+    service = _get_calendar_service()
+    service.events().delete(calendarId="primary", eventId=event_id).execute()
+    return "Deleted the event."
 
 
 def _get_header(headers: list, name: str) -> str:
@@ -566,7 +580,19 @@ def read_email(email_id: str) -> str:
 
 def draft_email(to: str, subject: str, body: str) -> str:
     """Creates a draft email without sending it."""
-    raise NotImplementedError("draft_email: P4 to implement.")
+    import base64
+    from email.mime.text import MIMEText
+    from googleapiclient.discovery import build
+
+    service = build("gmail", "v1", credentials=_get_google_credentials())
+
+    message = MIMEText(body)
+    message["To"] = to
+    message["Subject"] = subject
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+    draft = service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+    return f"Created a draft to {to} with subject '{subject}'."
 
 
 def send_email(to: str, subject: str, body: str) -> str:
@@ -1568,8 +1594,11 @@ TOOLS: dict[str, Callable[..., str]] = {
     # Calendar
     "create_calendar_event": create_calendar_event,
     "find_calendar_events": find_calendar_events,
+    "update_calendar_event": update_calendar_event,
+    "delete_calendar_event": delete_calendar_event,
     # Gmail
     "send_email": send_email,
+    "draft_email": draft_email,
     "search_emails": search_emails,
     "read_email": read_email,
     # Google Drive
