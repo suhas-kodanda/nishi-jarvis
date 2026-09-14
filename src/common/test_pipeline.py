@@ -9,6 +9,14 @@ Run:
     python test_pipeline.py
 """
 
+import sys
+from pathlib import Path
+
+# Same fix as chat.py -- "from common.X import Y" only resolves if src/
+# (not src/common/) is on sys.path. Confirmed by testing to fail when
+# this file is run directly without it, same as chat.py did.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import time
 
 from common.nishi_pipeline import handle_message

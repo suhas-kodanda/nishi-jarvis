@@ -10,11 +10,8 @@ If the decision needs real execution, a third+ set of calls happens inside
 the agent loop (reason_node), each cycle: reason -> act -> observe -> repeat.
 """
 
-from tabnanny import verbose
 from typing import Callable, Optional
 
-from httpx2 import query
-from httpx2 import query
 from langchain_google_genai import ChatGoogleGenerativeAI
 from dotenv import load_dotenv
 

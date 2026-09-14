@@ -7,6 +7,18 @@ Run:
 
 Type 'exit' or 'quit' to end the session, or Ctrl+C.
 """
+import sys
+from pathlib import Path
+
+# Several files now import via "from common.X import Y" (a namespace
+# package, no __init__.py). That only resolves if src/ -- not
+# src/common/ -- is on sys.path. Confirmed by testing: this resolves
+# inconsistently depending on exactly how the script gets invoked and
+# what's cached, which is fragile even in the runs where it happens to
+# work. Guaranteeing it explicitly here, before any other imports run,
+# removes that fragility rather than relying on it working by luck.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import warnings
 import logging
 from uuid import uuid4

@@ -1,4 +1,3 @@
-import uuid
 """
 Wires the real P1/P2 memory system into the get_memory_context /
 update_memory hooks handle_message() already expects.
@@ -25,7 +24,7 @@ Two real gotchas this handles, not just plumbing:
 import sys
 from pathlib import Path
 from typing import Literal, Optional
-from uuid import uuid4
+import uuid
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -222,14 +221,6 @@ def update_memory(
         confidence=1.0,
         metadata={"session_id": session_id},
     )
-
-    try:
-        extracted = get_fact_chain().invoke({
-            "user_input": user_input,
-            "response": response,
-        })
-    except Exception:
-        extracted = None
 
     if (
         extracted
