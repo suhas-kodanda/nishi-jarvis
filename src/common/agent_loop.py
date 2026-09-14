@@ -23,7 +23,9 @@ from typing import Literal, Optional, TypedDict
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import StructuredTool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
+from langgraph.types import Command, interrupt
 from dotenv import load_dotenv
 
 from common.schema import Observation
@@ -126,10 +128,38 @@ def reason_node(state: AgentState) -> AgentState:
     }
 
 
-def should_continue(state: AgentState) -> Literal["act", "end"]:
+def should_continue(state: AgentState) -> Literal["act", "ask_user", "end"]:
     if state["is_done"] or state["attempts"] >= 6:
         return "end"
+    if state["next_action"]["tool"] == "ask_user":
+        return "ask_user"
     return "act"
+
+
+def ask_user_node(state: AgentState) -> AgentState:
+    """Dedicated, isolated node for pausing -- deliberately contains
+    NOTHING except the interrupt() call itself.
+
+    This matters: LangGraph re-executes a node FROM THE TOP on resume,
+    not from mid-function -- confirmed by testing, not assumed. Putting
+    interrupt() inside reason_node (the first design tried) meant every
+    resume would re-run the LLM call too, and only correctly pick up the
+    answer if the model happened to re-request the exact same ask_user
+    call with the exact same question on that replay -- not guaranteed,
+    especially given how inconsistent flash-lite has already proven to
+    be elsewhere in this project. An isolated node makes the replay
+    trivial and deterministic: there's nothing here to go wrong except
+    the interrupt() call itself.
+    """
+    question = state["next_action"]["input"].get("question", "Can you clarify?")
+    answer = interrupt(question)
+    return {
+        **state,
+        "scratchpad": state["scratchpad"] + [
+            f"Asked user: {question}",
+            f"User answered: {answer}",
+        ],
+    }
 
 
 # execute_tool now dispatches for real through tools.TOOLS -- nothing left
@@ -170,10 +200,12 @@ def build_graph():
     graph = StateGraph(AgentState)
     graph.add_node("reason", reason_node)
     graph.add_node("act", act_node)
-    graph.add_conditional_edges("reason", should_continue, {"act": "act", "end": END})
+    graph.add_node("ask_user", ask_user_node)
+    graph.add_conditional_edges("reason", should_continue, {"act": "act", "ask_user": "ask_user", "end": END})
     graph.add_edge("act", "reason")
+    graph.add_edge("ask_user", "reason")
     graph.set_entry_point("reason")
-    return graph.compile()
+    return graph.compile(checkpointer=MemorySaver())
 
 
 if __name__ == "__main__":
@@ -186,7 +218,9 @@ if __name__ == "__main__":
             "is_done": False,
             "final_answer": None,
             "attempts": 0,
-        }
+            "memory_context": "none",
+        },
+        config={"configurable": {"thread_id": "manual-test"}},
     )
     print(result["final_answer"])
     print("\n".join(result["scratchpad"]))

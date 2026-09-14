@@ -13,6 +13,7 @@ the agent loop (reason_node), each cycle: reason -> act -> observe -> repeat.
 from typing import Callable, Optional
 
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.types import Command
 from dotenv import load_dotenv
 
 from common.agent_loop import build_graph, execute_tool
@@ -21,6 +22,11 @@ from common.prompt_templets import DECISION_PROMPT, QUERY_PROMPT
 from common.schema import Decision, Query
 
 load_dotenv()  # reads .env in the current folder and sets os.environ from it
+
+# Which sessions currently have a task paused mid-way, waiting on an
+# ask_user answer. In-memory, matching MemorySaver's own scope in
+# agent_loop.py -- both live only as long as this one chat.py process.
+_pending_interrupts: set[str] = set()
 
 # --- Stage 1: understand the query ---
 # _query_llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash-lite", temperature=0)
@@ -121,6 +127,25 @@ def make_decision(query: Query, memory_context: str, recent_context: str) -> Dec
 _agent_app = build_graph()
 
 
+def _handle_agent_result(result: dict, session_id: str) -> str:
+    """Shared handling for whatever _agent_app.invoke() returns, whether
+    from a fresh start or a resume -- ANY invocation can pause again (a
+    multi-step task might need more than one clarifying question), so
+    this can't be special-cased to just one call site."""
+    if "__interrupt__" in result:
+        _pending_interrupts.add(session_id)
+        return result["__interrupt__"][0].value
+
+    if result.get("final_answer"):
+        return result["final_answer"]
+
+    # Loop exhausted its attempts without completing -- say so honestly.
+    # Silently falling back to decision.answer here would present a real
+    # failure as if it succeeded, which is exactly what got fixed.
+    recent = "; ".join(result.get("scratchpad", [])[-3:]) or "no progress was made"
+    return f"I wasn't able to finish this after a few attempts. What I tried: {recent}"
+
+
 def handle_message(
     user_input: str,
     get_memory_context: Callable[[Query, str], str],
@@ -150,6 +175,32 @@ def handle_message(
     verbose: if True, prints the intermediate Query and Decision -- handy
     for testing without burning extra API calls re-deriving them separately.
     """
+    if session_id in _pending_interrupts:
+        # This session has a task paused mid-way, waiting on exactly
+        # this answer -- it's not a new request to classify, it's the
+        # missing piece of an existing one. Skip understand_query/
+        # make_decision entirely and resume the paused graph directly.
+        _pending_interrupts.discard(session_id)
+        config = {"configurable": {"thread_id": session_id}}
+        result = _agent_app.invoke(Command(resume=user_input), config=config)
+        response = _handle_agent_result(result, session_id)
+
+        if update_memory is not None:
+            try:
+                # No real Query/Decision exists for a resumed turn -- a
+                # minimal placeholder keeps update_memory's existing
+                # contract intact without inventing a fake classification.
+                placeholder_query = Query(
+                    interpreted_query=user_input, memory_required=False,
+                    intent="task_completion", tone="neutral", response_type="task_result",
+                )
+                placeholder_decision = Decision(type="task", execution_mode="execute", answer=response)
+                update_memory(user_input, response, placeholder_query, placeholder_decision, session_id)
+            except Exception as e:
+                if verbose:
+                    print(f"  [update_memory failed on resume, response still returned: {e}]")
+        return response
+
     try:
         query = understand_query(user_input)
     except Exception as e:
@@ -187,7 +238,7 @@ def handle_message(
         )
 
     try:
-        response = _resolve_response(decision,memory_context, verbose)
+        response = _resolve_response(decision, memory_context, session_id, verbose)
     except Exception as e:
         if verbose:
             print(f"  [_resolve_response failed: {e}]")
@@ -221,7 +272,7 @@ def _goal_context(decision: Decision) -> str:
     return f"Goal: {goal}. Objective: {objective}. Success looks like: {success}."
 
 
-def _resolve_response(decision: Decision, memory_context: str, verbose: bool) -> str:
+def _resolve_response(decision: Decision, memory_context: str, session_id: str, verbose: bool) -> str:
     """Everything after Decision is made: figure out the actual response
     text, whichever path (direct answer, fast tool call, or full loop)
     it takes. Split out from handle_message so update_memory above has
@@ -270,17 +321,11 @@ def _resolve_response(decision: Decision, memory_context: str, verbose: bool) ->
             "final_answer": None,
             "attempts": initial_attempts,
             "memory_context": memory_context,
-        }
+        },
+        config={"configurable": {"thread_id": session_id}},
     )
 
-    if result["final_answer"]:
-        return result["final_answer"]
-
-    # Loop exhausted its attempts without completing -- say so honestly.
-    # Silently falling back to decision.answer here would present a real
-    # failure as if it succeeded, which is exactly what got fixed.
-    recent = "; ".join(result["scratchpad"][-3:]) or "no progress was made"
-    return f"I wasn't able to finish this after a few attempts. What I tried: {recent}"
+    return _handle_agent_result(result, session_id)
 
 
 if __name__ == "__main__":
