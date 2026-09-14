@@ -3,21 +3,80 @@ NISHI P2 - Memory Retrieval and Selection
 
 P2 responsibilities:
 1. Receive candidate memories from P1.
-2. Rerank candidates.
-3. Select the most relevant memories.
-4. Return selected memory IDs.
-5. Send selected IDs back to P1.
+2. Identify the type of memory query.
+3. Rerank candidates.
+4. Give priority to relevant memory layers.
+5. Select the most relevant memories.
+6. Return selected memory IDs.
 """
 
-from memory.models import MemoryCandidate, MemoryLayer 
+from memory.models import MemoryCandidate, MemoryLayer
 
+
+# ---------------------------------------------------------
+# 1. Detect what kind of memory the user is asking for
+# ---------------------------------------------------------
+
+def is_history_query(query: str) -> bool:
+    """
+    Check whether the user is asking about previous conversations.
+    """
+
+    query = query.lower()
+
+    history_words = [
+        "conversation",
+        "conversations",
+        "talk",
+        "talked",
+        "discuss",
+        "discussed",
+        "chat",
+        "chats",
+        "history",
+        "what did we talk",
+        "what did we discuss",
+        "what have we talked",
+    ]
+
+    for word in history_words:
+        if word in query:
+            return True
+
+    return False
+
+
+def is_today_query(query: str) -> bool:
+    """
+    Check whether the user is asking specifically about today.
+    """
+
+    query = query.lower()
+
+    today_words = [
+        "today",
+        "this day",
+        "earlier today",
+        "so far today",
+    ]
+
+    for word in today_words:
+        if word in query:
+            return True
+
+    return False
+
+
+# ---------------------------------------------------------
+# 2. Calculate the normal P2 score
+# ---------------------------------------------------------
 
 def calculate_p2_score(memory: MemoryCandidate) -> float:
     """
-    Calculate the P2 score.
+    Normal P2 ranking score.
 
-    P1 has already calculated an initial relevance score.
-    P2 uses that score along with importance and confidence.
+    P1 already gives us a relevance score.
+    Importance and confidence are also considered.
     """
 
     score = (
@@ -29,40 +88,62 @@ def calculate_p2_score(memory: MemoryCandidate) -> float:
     return score
 
 
+# ---------------------------------------------------------
+# 3. Rerank candidates
+# ---------------------------------------------------------
+
 def rerank_candidates(
     candidates: list[MemoryCandidate],
+    query: str = "",
 ) -> list[MemoryCandidate]:
+
+    history_query = is_history_query(query)
 
     scored_candidates = []
 
     for memory in candidates:
 
-        p2_score = calculate_p2_score(memory)
+        score = calculate_p2_score(memory)
 
-        scored_candidates.append(
-            (memory, p2_score)
-        )
+        # -------------------------------------------------
+        # If this is a conversation-history query,
+        # strongly prefer L3 memories.
+        # -------------------------------------------------
+
+        if history_query and memory.layer == MemoryLayer.L3:
+            score += 1.0
+
+        scored_candidates.append((memory, score))
 
     scored_candidates.sort(
         key=lambda item: item[1],
         reverse=True
     )
 
-    return [
-        item[0]
-        for item in scored_candidates
-    ]
+    return [item[0] for item in scored_candidates]
 
+
+# ---------------------------------------------------------
+# 4. Select memories
+# ---------------------------------------------------------
 
 def select_memories(
     candidates: list[MemoryCandidate],
     top_n: int = 5,
+    query: str = "",
 ) -> list[MemoryCandidate]:
 
-    ranked = rerank_candidates(candidates)
+    ranked = rerank_candidates(
+        candidates,
+        query=query,
+    )
 
     return ranked[:top_n]
 
+
+# ---------------------------------------------------------
+# 5. Get IDs
+# ---------------------------------------------------------
 
 def get_selected_memory_ids(
     memories: list[MemoryCandidate],
@@ -74,33 +155,43 @@ def get_selected_memory_ids(
     ]
 
 
+# ---------------------------------------------------------
+# 6. Main P2 retrieval function
+# ---------------------------------------------------------
+
 def retrieve_and_select(
     provider,
     owner_id: str,
     query: str,
     top_n: int = 5,
 ):
-    """
-    P1 -> P2 pipeline.
 
-    P1 gives candidate memories.
-    P2 reranks and selects the best memories.
-    """
+    if is_history_query(query):
+        metadata = {
+            "record_type": "conversation_turn",
+        }
 
-    candidates = provider.candidate_retrieval(
-        owner_id=owner_id,
-        query=query,
-        limit=20,
-    )
-    candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.layer == MemoryLayer.L3
-    ]
+        if is_today_query(query):
+            from datetime import datetime, timezone
+            metadata["date"] = datetime.now(timezone.utc).date().isoformat()
+
+        candidates = provider.candidate_retrieval(
+            owner_id=owner_id,
+            query=query,
+            limit=50,
+            metadata=metadata,
+        )
+    else:
+        candidates = provider.candidate_retrieval(
+            owner_id=owner_id,
+            query=query,
+            limit=20,
+        )
 
     selected_memories = select_memories(
         candidates,
-        top_n,
+        top_n=top_n,
+        query=query,
     )
 
     selected_ids = get_selected_memory_ids(
@@ -110,21 +201,16 @@ def retrieve_and_select(
     return selected_memories, selected_ids
 
 
+# ---------------------------------------------------------
+# 7. Build final context through P1
+# ---------------------------------------------------------
+
 def retrieve_final_context(
     provider,
     owner_id: str,
     query: str,
     top_n: int = 5,
 ):
-    """
-    Complete P1 -> P2 -> P1 pipeline.
-
-    1. P1 retrieves candidates.
-    2. P2 reranks them.
-    3. P2 selects top N.
-    4. P2 sends selected IDs back to P1.
-    5. P1 creates the final MemoryContext.
-    """
 
     selected_memories, selected_ids = retrieve_and_select(
         provider=provider,

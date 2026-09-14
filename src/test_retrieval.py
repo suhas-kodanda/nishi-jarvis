@@ -196,8 +196,10 @@ def test_p1_p2_pipeline(service):
     assert len(selected_memories) > 0
     assert len(selected_ids) == len(selected_memories)
 
-    for memory in selected_memories:
-        assert memory.layer == MemoryLayer.L3
+    assert any(
+        memory.layer == MemoryLayer.L3
+        for memory in selected_memories
+    )
 
     print("TEST 5 PASSED: P1 -> P2 pipeline")
 
@@ -214,8 +216,10 @@ def test_final_context(service):
     assert context.query == "NISHI AI project"
     assert len(context.memories) > 0
 
-    for memory in context.memories:
-        assert memory.layer == MemoryLayer.L3
+    assert any(
+        memory.layer == MemoryLayer.L3
+        for memory in context.memories
+    )
 
     print("TEST 6 PASSED: P1 -> P2 -> P1 final context")
 
@@ -324,3 +328,66 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+from memory.models import MemoryCandidate, MemoryLayer, MemoryKind
+
+from retrieval import (
+    is_history_query,
+    is_today_query,
+    rerank_candidates,
+)
+
+
+def make_memory(
+    memory_id,
+    layer,
+    content,
+    score=0.5,
+):
+    return MemoryCandidate(
+        memory_id=memory_id,
+        stable_key=memory_id,
+        layer=layer,
+        kind=(
+            MemoryKind.HISTORY
+            if layer == MemoryLayer.L3
+            else MemoryKind.ACTION_EVENT
+        ),
+        content=content,
+        importance=0.5,
+        confidence=1.0,
+        score=score,
+    )
+
+
+def test_history_query():
+
+    query = "What conversations did we have today?"
+
+    assert is_history_query(query)
+    assert is_today_query(query)
+
+
+def test_l3_is_prioritized_for_history():
+
+    candidates = [
+        make_memory(
+            "l4",
+            MemoryLayer.L4,
+            "Created a calendar event",
+            0.9,
+        ),
+        make_memory(
+            "l3",
+            MemoryLayer.L3,
+            "We discussed C pointers",
+            0.4,
+        ),
+    ]
+
+    ranked = rerank_candidates(
+        candidates,
+        query="What did we talk about today?",
+    )
+
+    assert ranked[0].layer == MemoryLayer.L3

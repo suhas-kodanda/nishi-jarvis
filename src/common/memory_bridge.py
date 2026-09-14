@@ -211,15 +211,13 @@ def update_memory(
     except Exception:
         extracted = None  # classification failing shouldn't affect anything else
 
-    _memory_service.save_memory(
+    _memory_service.save_conversation_turn(
         owner_id=OWNER_ID,
-        stable_key=f"l3_{uuid.uuid4().hex}",
-        layer=MemoryLayer.L3,
-        kind=MemoryKind.HISTORY,
-        content=f"User: {user_input}\nNishi: {response}",
+        user_message=user_input,
+        assistant_response=response,
+        session_id=session_id,
         importance=0.5,
         confidence=1.0,
-        metadata={"session_id": session_id},
     )
 
     if (
