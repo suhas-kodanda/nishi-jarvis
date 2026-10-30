@@ -1,92 +1,73 @@
-# NISHI - P2 Memory Retrieval
+# Nishi
 
-## Responsibility
+**A modular personal AI assistant combining persistent memory, LLM-based reasoning, and tool-driven task execution.**
 
-P2 is responsible for retrieving relevant memories for the current user query.
+Nishi explores an architecture for personal AI assistants that can retain relevant context, interpret user intent, and execute tasks through external tools.
 
-P2 does not manage memory storage.
+## Overview
 
-P1 owns memory creation, updating, deletion and storage.
+Unlike a conventional chatbot, Nishi separates conversation processing, memory retrieval, decision-making, and task execution into modular components. This architecture provides a foundation for building an assistant that can move beyond generating responses to performing useful actions.
 
-## Input
+## Core Capabilities
 
-P2 receives:
+- **Hierarchical Memory:** Organizes preferences, goals, and conversation history into distinct memory layers.
+- **Context Retrieval:** Selects relevant memories using relevance, importance, and confidence scores.
+- **Decision Pipeline:** Routes requests according to intent and execution requirements.
+- **Tool-Based Execution:** Supports multi-step workflows through a reasoning and observation loop.
+- **External Integrations:** Includes tools for Google services and GitHub.
 
-- Current user query
-- Current conversation
-- Stored memories from P1
+## Technology Stack
 
-## Retrieval Pipeline
+| Technology | Purpose |
+|---|---|
+| Python | Core implementation |
+| Google Gemini | Language model |
+| LangChain | Model and tool integration |
+| LangGraph | Agent workflow orchestration |
+| Pydantic | Data validation and structured schemas |
+| SQLite | Persistent memory storage |
 
-Query
-↓
-Tokenization
-↓
-Stop-word removal
-↓
-Basic synonym expansion
-↓
-Relevance calculation
-↓
-Importance scoring
-↓
-Ranking
-↓
-Top-N retrieval
-↓
-Layer organization
-↓
-Final memory context
+## Project Structure
 
-## Memory Layers
+```text
+nishi-jarvis/
+├── memory/       # Memory models, storage, and services
+├── src/          # Retrieval, orchestration, and tool integrations
+├── requirements.txt
+└── README.md
+```
 
-L1 - User personality and preferences
+## Getting Started
 
-L2 - User goals and ambitions
+### Prerequisites
 
-L3 - Relevant conversation/history
+- Python 3.10 or later
+- Google Gemini API key
+- Additional credentials for external integrations
 
-L4 - Current conversation
+### Installation
 
-## Output
+```bash
+git clone https://github.com/suhas-kodanda/nishi-jarvis.git
+cd nishi-jarvis
 
-P2 returns:
+python -m venv .venv
+```
 
-{
-    "L1": [...],
-    "L2": [...],
-    "L3": [...],
-    "L4": [...]
-}
+Activate the virtual environment and install dependencies:
 
-## Important Design Decision
+```bash
+pip install -r requirements.txt
+```
 
-The current implementation does not use:
+Configure the required environment variables and integration credentials before running the application.
 
-- Embeddings
-- Vector databases
-- LLM calls
-- LangChain memory
+## Current Scope
 
-This keeps retrieval lightweight and reduces unnecessary API/token cost.
+Nishi is an evolving prototype. It currently uses score-based memory retrieval rather than embedding-based semantic search. External integrations require individual configuration, and the project is not yet designed for production deployment.
 
-## P1 Interface
+## Project Goal
 
-P1 should eventually provide the stored memories through a function/interface such as:
-
-get_memories()
-
-P2 only reads the returned memories and does not modify them.
-
-## P2 Interface
-
-Main function:
-
-build_context(
-    query,
-    current_conversation,
-    memories,
-    top_n=5
-)
+The long-term objective is to explore how persistent memory, structured decision-making, and tool execution can be combined into a cohesive personal AI assistant.
 
 This returns the final memory context for P3.
